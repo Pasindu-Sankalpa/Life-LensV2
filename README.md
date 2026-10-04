@@ -20,7 +20,7 @@ This repository is named **Life-LensV2**; the current interface uses **LincolnLe
 
 ## Live demo
 
-**Try it now:** [https://your-live-url.vercel.app](https://your-live-url.vercel.app)
+**Try it now:** [https://life-lens-v2.vercel.app/](https://life-lens-v2.vercel.app/)
 
 The live app runs on Vercel with the language model hosted on Modal. If the model has been idle, the first AI response can take a few minutes while it starts; later responses are fast.
 
