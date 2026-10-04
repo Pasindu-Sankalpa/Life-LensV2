@@ -79,7 +79,7 @@ Running locally takes two steps, each in its own terminal:
 **Get the code first:**
 
 ```bash
-git clone https://github.com/dineth99-bit/Life-LensV2.git
+git clone https://github.com/Pasindu-Sankalpa/Life-LensV2.git
 cd Life-LensV2
 ```
 
