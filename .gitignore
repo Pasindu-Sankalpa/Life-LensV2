@@ -4,4 +4,3 @@ __pycache__/
 .venv
 .vite
 llm.local.json
-llm.config.json
