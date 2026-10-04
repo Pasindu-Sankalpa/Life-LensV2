@@ -298,7 +298,7 @@ button{cursor:pointer}
 body:not(.on-landing) .landing{display:none}
 body.on-landing .app{visibility:hidden}
 .landing-photo{position:absolute; inset:0; overflow:hidden; background:#F7EFE6}
-.landing-photo img{position:absolute; top:-50%; right:0; width:70%; height:180%; object-fit:cover; object-position:83% 38%}
+.landing-photo img{position:absolute; top:0; right:0; width:72%; height:100%; object-fit:cover; object-position:72% 50%}
 .landing-photo::after{content:""; position:absolute; inset:0; background:linear-gradient(90deg, #F7EFE6 0%, #F7EFE6 28%, rgba(247,239,230,.55) 42%, rgba(247,239,230,0) 58%), linear-gradient(180deg, rgba(247,239,230,.12) 0%, rgba(247,239,230,0) 18%)}
 .landing-inner{position:relative; z-index:1; max-width:1360px; margin:0 auto; min-height:100%; padding:clamp(28px,4vw,48px) clamp(22px,5vw,72px) 48px; display:grid; grid-template-columns:minmax(0,1fr) minmax(320px,.92fr); grid-template-areas:"brand brand" "hero cards"; grid-template-rows:auto 1fr; column-gap:clamp(24px,4.5vw,64px); row-gap:clamp(20px,4vw,40px); align-items:center}
 .l-brand{grid-area:brand; align-self:start}
@@ -306,6 +306,7 @@ body.on-landing .app{visibility:hidden}
 .l-brand .tag{font-size:.95rem; color:#5C4C53; margin-top:6px}
 .l-hero{grid-area:hero; align-self:center}
 .l-hero h1{font-family:var(--serif); font-weight:700; font-size:clamp(2.35rem,4.6vw,3.7rem); line-height:1.1; letter-spacing:-.03em; margin:0 0 18px; color:#1F1519; max-width:13ch}
+.l-hero h1 em{font-style:italic; font-weight:400; color:var(--brand)}
 .l-hero .lede{font-size:clamp(1.02rem,1.3vw,1.14rem); line-height:1.6; color:#5C4C53; margin:0 0 28px; max-width:36ch}
 .l-actions{display:flex; flex-wrap:wrap; align-items:center; gap:14px 22px}
 .l-cta{border:0; background:var(--brand); color:#fff; font-weight:600; font-size:1.05rem; padding:16px 28px; border-radius:999px; box-shadow:0 14px 30px -18px rgba(110,31,71,.8); transition:transform .12s ease, box-shadow .12s}
@@ -429,7 +430,7 @@ body.on-landing .app{visibility:hidden}
 }
 @media (max-width: 900px){
   .landing-inner{grid-template-columns:1fr; grid-template-areas:"brand" "hero" "cards"; row-gap:28px}
-  .landing-photo img{top:-28%; right:-6%; width:100%; height:150%; object-position:86% 36%}
+  .landing-photo img{width:100%}
   .landing-photo::after{background:linear-gradient(180deg, rgba(247,239,230,.7) 0%, rgba(247,239,230,.28) 34%, rgba(247,239,230,.12) 100%)}
   .l-hero{padding-bottom:0}
   .l-cards{max-width:none}
