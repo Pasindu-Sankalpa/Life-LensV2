@@ -10,7 +10,21 @@ The app shows what the money is intended to cover: the home, income support, deb
 
 This repository is named **Life-LensV2**; the current interface uses **LincolnLens**. Estimates, premiums, health classes, and cash-value projections are educational illustrations—not quotes, underwriting decisions, or financial advice.
 
-[Quick start](#quick-start) · [Model setup](#connecting-a-language-model) · [Architecture](#architecture) · [Calculations](#how-coverage-is-calculated) · [Privacy](#data-and-privacy) · [Troubleshooting](#deployment-and-troubleshooting)
+## Walkthrough
+
+[![Watch the LincolnLens walkthrough on YouTube](images/walkthough.PNG)](https://youtu.be/X3ahr12aM20)
+
+*Click the thumbnail to watch the walkthrough on YouTube.*
+
+## Live demo
+
+**Try it now:** [https://your-live-url.vercel.app](https://your-live-url.vercel.app)
+
+The live app runs on Vercel with the language model hosted on Modal. If the model has been idle, the first AI response can take a few minutes while it starts; later responses are fast.
+
+[What you can do](#what-you-can-do) · [Run locally](#run-locally) · [Host it online](#host-it-online-modal--vercel) · [Model setup](#connecting-a-language-model) · [Architecture](#architecture) · [Calculations](#how-coverage-is-calculated) · [Privacy](#data-and-privacy) · [Troubleshooting](#troubleshooting)
+
+<table> <tr> <td width="50%"><img src="images/image%20(1).png" alt="LincolnLens screenshot 1" width="100%"></td> <td width="50%"><img src="images/image%20(2).png" alt="LincolnLens screenshot 2" width="100%"></td> </tr> <tr> <td width="50%"><img src="images/image%20(3).png" alt="LincolnLens screenshot 3" width="100%"></td> <td width="50%"><img src="images/image%20(4).png" alt="LincolnLens screenshot 4" width="100%"></td> </tr> <tr> <td width="50%"><img src="images/image%20(5).png" alt="LincolnLens screenshot 5" width="100%"></td> <td width="50%"><img src="images/image%20(6).png" alt="LincolnLens screenshot 6" width="100%"></td> </tr> <tr> <td width="50%"><img src="images/image%20(7).png" alt="LincolnLens screenshot 7" width="100%"></td> <td width="50%"><img src="images/image%20(8).png" alt="LincolnLens screenshot 8" width="100%"></td> </tr> </table>
 
 ## What you can do
 
@@ -45,93 +59,275 @@ The quick path applies editable defaults to selected unanswered questions. These
 
 Scenario previews use a copy of the profile and assumptions. Users can compare scenarios or explicitly apply a change. The illness and job-loss scenarios model the effect on savings, debts, and the subsequent coverage gap; they do not simulate a life insurance payout for those events.
 
-## Quick start
+## Run locally
 
-Suggested environment: **Node.js 22+**, **npm**, and **Python 3.10+**. A model endpoint is optional for trying the guided calculator and built-in responses. Model failures fall back to local parsing or prepared explanations, although a slow endpoint can delay that fallback.
+Running locally takes two steps, each in its own terminal:
 
-### 1. Install and build
+1. **Run the server:** the Python (FastAPI) service that serves the built app and forwards model requests.
+2. **Run the frontend:** the Vite dev server with hot reload.
+
+**You need:** Node.js 22+, npm, and Python 3.10+.
+
+> **Important: the `local` backend only works if you run your own LLM.** `local` means a model server on your own machine (by default at `http://127.0.0.1:8000`). This repository does not install or start one. If nothing is listening there, the AI features will not reach a model. You have three options:
+>
+> 1. **Run a local LLM server** that exposes an OpenAI-compatible `/v1/chat/completions` route (for example, vLLM or Ollama), then set its URL and model name in `llm.config.json`.
+> 2. **Use a hosted model instead.** Follow [Part A](#part-a-host-the-model-on-modal) to host one on Modal and set `backend` to `modal`.
+> 3. **Skip the model.** The guided calculator and built-in responses still work. Model failures fall back to local parsing or prepared explanations, although an unreachable or slow endpoint can delay that fallback.
+
+**Get the code first:**
 
 ```bash
 git clone https://github.com/dineth99-bit/Life-LensV2.git
 cd Life-LensV2
-npm ci
-npm run build
-
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
 ```
 
-On Windows, use `python -m venv .venv` and activate it with `.venv\Scripts\Activate.ps1` in PowerShell.
+### Step 1: Run the server
 
-### 2. Review the model configuration
+1. **Create a virtual environment and install the Python dependencies.**
 
-The active configuration is `llm.config.json` in the repository root. For a local setup with no credentials, use:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   python -m pip install -r requirements.txt
+   ```
 
-```json
-{
-  "backend": "local",
-  "local": {
-    "url": "http://127.0.0.1:8000/v1/chat/completions",
-    "model": "Qwen/Qwen3.5-9B",
-    "key": ""
-  },
-  "modal": {
-    "url": "",
-    "model": "Qwen/Qwen3.5-9B",
-    "key": ""
-  }
-}
-```
+   On Windows, use `python -m venv .venv` and activate it with `.venv\Scripts\Activate.ps1` in PowerShell.
 
-The model name above is the proxy’s default. Use the exact model ID served by your endpoint; the repository does not install or launch a model server.
+2. **Review the model configuration.** The active configuration is `llm.config.json` in the repository root. The `local` block below points at an LLM server running on your own machine, so it only works if you have a locally hosted LLM listening at that URL. For a local setup with no credentials, use:
 
-**Credential handling:** `llm.config.json` is currently tracked by Git even though `.gitignore` lists it. Ignoring an already tracked file does not protect later edits. Remove it from tracking before storing credentials (`git rm --cached llm.config.json` keeps the local file), commit that removal, and keep any shared example free of secrets. Revoke or rotate credentials that have already been committed; deleting the current file does not remove earlier copies.
+   ```json
+   {
+     "backend": "local",
+     "local": {
+       "url": "http://127.0.0.1:8000/v1/chat/completions",
+       "model": "Qwen/Qwen3.5-9B",
+       "key": ""
+     },
+     "modal": {
+       "url": "",
+       "model": "Qwen/Qwen3.5-9B",
+       "key": ""
+     }
+   }
+   ```
 
-If the file is missing or cannot be parsed, `server.py` falls back to its local defaults. `llm.local.json` is ignored by Git but is not read by this server.
+   The model name above is the proxy’s default. Use the exact model ID served by your endpoint; the repository does not install or launch a model server. To use a model hosted on Modal instead, finish [Part A](#part-a-host-the-model-on-modal) and set `backend` to `modal` with that block’s URL, model, and key.
 
-### 3. Start the application
+   **Credential handling:** `llm.config.json` is currently tracked by Git even though `.gitignore` lists it. Ignoring an already tracked file does not protect later edits. Remove it from tracking before storing credentials (`git rm --cached llm.config.json` keeps the local file), commit that removal, and keep any shared example free of secrets. Revoke or rotate credentials that have already been committed; deleting the current file does not remove earlier copies.
 
-```bash
-python server.py
-```
+   If the file is missing or cannot be parsed, `server.py` falls back to its local defaults. `llm.local.json` is ignored by Git but is not read by this server.
 
-Open **[http://127.0.0.1:3020](http://127.0.0.1:3020)**.
+3. **Start the server.**
 
-The server serves the built `dist/` directory and handles model requests. It listens on `0.0.0.0:3020`; it is not restricted to localhost. To bind only to localhost instead:
+   ```bash
+   python server.py
+   ```
 
-```bash
-python -m uvicorn server:app --host 127.0.0.1 --port 3020
-```
+   Open **[http://127.0.0.1:3020](http://127.0.0.1:3020)**. The server serves the built `dist/` directory and handles model requests. It listens on `0.0.0.0:3020`; it is not restricted to localhost. To bind only to localhost instead:
 
-### 4. Try the included example
+   ```bash
+   python -m uvicorn server:app --host 127.0.0.1 --port 3020
+   ```
+
+4. **Check that it sees your model** (see [API checks](#api-checks) for how to read the result):
+
+   ```bash
+   curl http://127.0.0.1:3020/api/backends
+   ```
+
+Leave this terminal running and continue to Step 2.
+
+### Step 2: Run the frontend
+
+1. **Install the frontend dependencies** (in a second terminal, from the repository root):
+
+   ```bash
+   npm ci
+   ```
+
+2. **Start Vite.** Keep the Python server from Step 1 running.
+
+   ```bash
+   npm run dev
+   ```
+
+3. **Open the URL printed in the terminal.** Vite requests port **5174** and proxies `/api` to **3020**; if 5174 is occupied, use the URL it prints instead. Changes to source files appear immediately.
+
+4. **Rebuild when you want Python to serve your changes.** Python serves `dist/`, not `src/`:
+
+   ```bash
+   npm run build
+   ```
+
+   If `dist/` is missing or stale, port 3020 will show old content or fail to load the page.
+
+5. **Optional: preview the production build.** `npm run preview` serves the built frontend, normally on port **4173**. With the repository’s Vite configuration, preview inherits the `/api` proxy to **3020**, so keep the Python server running for AI features there too.
+
+### Try the included example
 
 Choose **Build my plan**, then **Try a young family**. Review the extracted facts, continue through the plan, move the coverage slider, and open **Behind the numbers**. In **Explore**, compare a scenario and choose **Put my plan together** to copy or download the summary.
 
-### Frontend development
+## Host it online (Modal + Vercel)
 
-Keep the Python server running, then start Vite in a second terminal:
+A hosted setup has three parts: the browser, a Vercel project (the static frontend plus the FastAPI function that proxies model requests), and a model endpoint on Modal. The web process does not need a GPU; only the model does.
 
-```bash
-npm run dev
+```mermaid
+flowchart LR
+  Browser["Browser"] --> Vercel["Vercel: static frontend and /api functions"]
+  Vercel -->|"server-side key"| Modal["Modal: Qwen model endpoint"]
 ```
 
-Vite requests port **5174** and proxies `/api` to **3020**. Use the URL printed in the terminal if that port is already occupied. Changes to source files appear through Vite; rebuild with `npm run build` to update the copy served by Python.
+Do these in order: host the model on Modal first, then deploy to Vercel using the values from Modal.
 
-`npm run preview` previews the built frontend, normally on port **4173**. With the repository’s Vite configuration, preview inherits the `/api` proxy to **3020**, so keep the Python server running for AI features there too.
+> **Before you make it public:** anyone who can open the site can call `/api/complete`, and every call uses your model credits. The repository does not include access controls, request limits, or rate limiting, so add them before sharing a public URL. Keep inference credentials server-side.
+
+### Part A: Host the model on Modal
+
+1. **Create a Modal account and install the CLI.**
+
+   ```bash
+   pip install modal
+   modal setup
+   ```
+
+   `modal setup` signs you in through the browser. The free Starter plan includes monthly compute credits; check Modal’s pricing page for the current amount.
+
+2. **Deploy an OpenAI-compatible endpoint for your model.** The repository does not include a Modal deployment script, so use either Modal’s Auto Endpoints in the dashboard or your own script (for example, vLLM or SGLang served from a Modal function) deployed with `modal deploy your_script.py`. This project is tested with `Qwen/Qwen3.5-9B`. Choose these settings:
+
+   | Setting | Recommendation |
+   | --- | --- |
+   | GPU | The smallest GPU that fits your model and precision. Larger GPUs cost more per hour. |
+   | Authentication | Keep it on. The proxy sends a bearer token. |
+   | Scale-down window | How long an idle container stays alive. Modal allows 2 seconds to 20 minutes. Longer means fewer cold starts and more idle cost. |
+   | Minimum containers | `0` scales to zero when idle and costs nothing between uses. `1` keeps the model warm but bills continuously. Use it only for demos. |
+
+3. **Copy the endpoint URL.** The chat-completions URL used by this project is the endpoint’s base URL plus `/v1/chat/completions`, for example:
+
+   ```text
+   https://<workspace>--<app-name>-server.<region>.modal.direct/v1/chat/completions
+   ```
+
+4. **Create an access token if your endpoint requires authentication.** In your Modal workspace settings, create a proxy auth token. The value used for `key` is the token ID and token secret joined by a period (`<token-id>.<token-secret>`); the proxy adds `Authorization: Bearer <key>` itself. Treat the secret like a password. If it is ever pasted into a chat, issue, or commit, delete it and create a new one.
+
+5. **Find the exact model name.** Ask the endpoint what it is serving:
+
+   ```bash
+   curl "https://<your-endpoint>/v1/models" \
+     -H "Authorization: Bearer <token-id>.<token-secret>"
+   ```
+
+   Use the returned `id` (for example, `Qwen/Qwen3.5-9B`) as the model value. It must match exactly, including capitalization and any prefix.
+
+6. **Test a real completion.**
+
+   ```bash
+   curl "https://<your-endpoint>/v1/chat/completions" \
+     -H "Authorization: Bearer <token-id>.<token-secret>" \
+     -H "Content-Type: application/json" \
+     -d '{"model":"Qwen/Qwen3.5-9B","messages":[{"role":"user","content":"Hello!"}]}'
+   ```
+
+   The first request after the endpoint has been idle can take minutes while the container starts and loads the model. Later requests are fast.
+
+7. **Stop it when you are not using it.** GPU time is billed while containers run.
+
+   ```bash
+   modal app stop <app-name>
+   ```
+
+You now have the three values Vercel needs: the full chat-completions URL, the model name, and the token.
+
+### Part B: Deploy on Vercel
+
+The project deploys the Vite frontend and the FastAPI backend together:
+
+- Static frontend: `dist/`
+- Python function: `api/index.py`
+- API routes: `/api/backends` and `/api/complete`
+
+Vercel builds the frontend through `@vercel/static-build` and runs FastAPI through `@vercel/python`.
+
+1. **Prepare.** Create a Vercel account, install the CLI (`npm install -g vercel`), and have the Modal values from Part A ready.
+
+2. **Confirm the project builds locally.**
+
+   ```bash
+   npm install
+   npm run build
+   ```
+
+3. **Sign in and link the project.** From the repository root:
+
+   ```bash
+   vercel login
+   vercel link
+   ```
+
+4. **Create the environment variables.** You can use either the dashboard or the CLI.
+
+   **Dashboard:** open your project → **Settings** → **Environment Variables**. For each row in the table below, enter the name and value, choose the environments it applies to (**Production**, and **Preview** if you test on preview deployments), and save. Mark `MODAL_LLM_KEY` as sensitive if the option is offered.
+
+   **CLI:** run `vercel env add <NAME> production` and paste the value when prompted. For example:
+
+   ```bash
+   vercel env add BACKEND production
+   vercel env add VITE_BACKEND production
+   vercel env add MODAL_LLM_URL production
+   vercel env add MODAL_LLM_MODEL production
+   vercel env add MODAL_LLM_KEY production
+   ```
+
+   | Name | Value | Notes |
+   | --- | --- | --- |
+   | `BACKEND` | `modal` | Selects the Modal block on the server. |
+   | `VITE_BACKEND` | `modal` | Frontend build setting; keep it the same as `BACKEND`. |
+   | `MODAL_LLM_URL` | `https://your-modal-endpoint/v1/chat/completions` | The full chat-completions URL from Part A, step 3. |
+   | `MODAL_LLM_MODEL` | `Qwen/Qwen3.5-9B` | Must match the name from Part A, step 5. |
+   | `MODAL_LLM_KEY` | `<token-id>.<token-secret>` | **Server-only.** Never prefix it with `VITE_`; `VITE_` values are exposed to the browser. |
+   | `LOCAL_LLM_URL` | `http://127.0.0.1:8000/v1/chat/completions` | Only used when `BACKEND=local`. Vercel cannot reach your computer’s localhost, so it is unused here. |
+   | `LOCAL_LLM_MODEL` | `Qwen/Qwen3.5-9B` | Only used when `BACKEND=local`. |
+   | `LOCAL_LLM_KEY` | *(empty)* | Only used when `BACKEND=local`. |
+   | `VITE_API_URL` | *(empty)* | Leave empty for a same-project deployment so the browser uses same-origin `/api` routes. |
+   | `FRONTEND_ORIGINS` | *(only for a separate API project)* | Set on the API project to the frontend’s URL. |
+
+   Variables with the `VITE_` prefix are baked into the frontend at build time, so a change requires a new build.
+
+5. **Deploy to production.**
+
+   ```bash
+   vercel --prod
+   ```
+
+   Environment variable changes only apply to **new** deployments. After adding or editing a variable, run `vercel --prod` again (or redeploy from the dashboard).
+
+6. **Verify.**
+
+   ```bash
+   curl https://<your-project>.vercel.app/api/backends
+   ```
+
+   You should see `"active": "modal"` and the model name. Remember that `ok: true` is only a loose reachability signal (see [API checks](#api-checks)). Then open the site and run **Try a young family** to confirm real model responses.
+
+7. **Optional: separate API project.** To host the API in a different Vercel project, set `VITE_API_URL` on the frontend project to the API’s public Vercel URL, and set `FRONTEND_ORIGINS` on the API project to the frontend URL.
+
+**Notes**
+
+- For local development, `.env` is loaded by the Python server and Vite loads `VITE_*` values at build and dev startup. Restart both processes after changing environment variables.
+- Model requests can take a while, especially on a cold Modal container. The proxy waits up to 120 seconds, and your Vercel plan has its own function time limit. If requests time out, warm the Modal endpoint first (Part A, step 5) or review your plan’s limit.
+- Static hosting alone does not provide `/api/complete`; the Vercel Python function does.
 
 ## Connecting a language model
 
-`server.py` reads `llm.config.json` for each request, so switching the active block does not require a restart.
+`server.py` reads `llm.config.json` for each request when running locally, so switching the active block does not require a restart. On Vercel, the same settings come from [environment variables](#part-b-deploy-on-vercel).
 
 | Setting | Meaning |
 | --- | --- |
-| `backend` | Selects `local` or `modal`. There is no automatic failover between them. |
+| `backend` | Selects `local` or `modal`. `local` requires an LLM server running on your own machine; use `modal` for a hosted model. There is no automatic failover between them. |
 | `url` | Full OpenAI-style chat-completions URL, including `/v1/chat/completions` where required by the provider. |
 | `model` | Model ID expected by the selected endpoint. |
 | `key` | Optional token. The server adds `Authorization: Bearer <key>`; enter only the token. |
 
-For a hosted model, set `backend` to `modal` and fill in that block’s URL, model, and key. The label selects a configuration block; it does not deploy a Modal app. Neither block provisions model infrastructure.
+For a hosted model, set `backend` to `modal` and fill in that block’s URL, model, and key. The label selects a configuration block; it does not deploy a Modal app. Neither block provisions model infrastructure; see [Part A](#part-a-host-the-model-on-modal) for deploying one.
 
 The proxy sends `temperature: 0.3`, `max_tokens: 2048`, `top_p: 0.9`, `stream: false`, and `reasoning_effort: "none"`, with a 120-second HTTP timeout. An endpoint must accept this request format and return text in `choices[0].message.content`. If your provider rejects an optional field such as `reasoning_effort`, adapt the request body in `server.py`.
 
@@ -157,7 +353,7 @@ curl -X POST http://127.0.0.1:3020/api/complete \
 | --- | --- |
 | `GET /api/backends` | Report the configured model and probe its endpoint. |
 | `POST /api/complete` | Accept `prompt` or a `messages` array, plus optional `json: true`; return text and backend metadata. JSON requests also receive a parsed `json` field. |
-| `GET /` and asset paths | Serve files from `dist/`. |
+| `GET /` and asset paths | Serve files from `dist/` (local server). |
 
 ## Architecture
 
@@ -176,11 +372,11 @@ flowchart TD
     UI <--> Saved
   end
   AI <--> Proxy["FastAPI model proxy"]
-  Config["llm.config.json"] --> Proxy
+  Config["llm.config.json or environment variables"] --> Proxy
   Proxy <--> Model["Local or hosted model"]
 ```
 
-The browser calculates estimates and checks displayed AI prose. The Python service serves the build and forwards model requests; it does not calculate coverage or run the dollar-figure guard.
+The browser calculates estimates and checks displayed AI prose. The Python service serves the build (locally) and forwards model requests; it does not calculate coverage or run the dollar-figure guard.
 
 `src/client.js` installs a compatibility bridge named `window.claude`. In the normal Vite entry point, that bridge sends requests to `/api/complete`; the name does not require an Anthropic account or Claude model. The older direct-model settings in `src/ai.js` are a fallback path, not the normal configuration switch.
 
@@ -247,7 +443,7 @@ This is a limited consistency check. It does not verify percentages, amounts wri
 - Up to **30 plans** are saved in the current browser under `lincolnlens.plans.v1`. Records include profile data, assumptions, conversation history, recent Q&A, and scenario comparisons. There is no cross-device sync.
 - The save routine clears both people’s structured health fields and replaces answers associated with dedicated health-question nodes. **It does not comprehensively remove sensitive information from free-text chat, Q&A, or generated text.** The interface’s “health answers are never saved” wording is broader than this implementation.
 - Model requests can include extracted household facts, calculated plan figures, an estimated health class, and recent conversation turns—not only the latest message. A hosted model receives that context through the Python proxy.
-- The application does not implement server-side plan storage. Model providers and hosting infrastructure may have their own logging and retention behavior.
+- The application does not implement server-side plan storage. Model providers and hosting infrastructure (including Vercel and Modal) may have their own logging and retention behavior.
 - The page loads fonts from Google Fonts. Browser-local plan storage does not mean the page makes no external requests.
 - Downloaded summaries may include an estimated health class and recent questions. Review them before sharing. Deleting a browser plan does not delete exports or provider-side records.
 
@@ -264,28 +460,32 @@ This is a limited consistency check. It does not verify percentages, amounts wri
 | [`src/hero.js`](src/hero.js) | Landing interactions, navigation, and browser plan persistence. |
 | [`src/ui.js`](src/ui.js), [`src/dom.js`](src/dom.js), [`src/styles.css`](src/styles.css) | Widgets, plan rendering, helpers, and responsive styling. |
 | [`server.py`](server.py), [`requirements.txt`](requirements.txt) | Python web server and dependencies. |
+| `api/index.py` | Vercel Python function exposing `/api/backends` and `/api/complete`. |
 | [`vite.config.js`](vite.config.js), [`package.json`](package.json) | Frontend build and development commands. |
-| `llm.config.json` | Runtime endpoint selection and optional credentials; currently tracked. |
+| `llm.config.json` | Local runtime endpoint selection and optional credentials; currently tracked. |
+| `docs/` | README assets, such as the preview image. |
 | `dist/` | Built files served by Python; currently committed to the repository. |
 | `lincoln.html`, `product.html`, `incoming/` | Additional HTML and assembly files; not the default Vite entry point. |
 
-## Deployment and troubleshooting
+## Troubleshooting
 
-Host the built frontend and Python proxy together, with either a local model service or a reachable remote endpoint. The web process does not require a GPU; a self-hosted model has separate hardware requirements. Static hosting alone does not provide `/api/complete`.
-
-For a public deployment, place the Python service behind HTTPS and add access controls, request limits, and rate limiting. The repository does not include those protections, a deployment manifest, or a Modal deployment script. Keep inference credentials server-side and allow enough proxy time for model requests.
+The available npm scripts are `dev`, `build`, and `preview`. No automated test suite or `test` script is included. After changing calculations or conversation behavior, check the guided path, edited inputs, scenario comparisons, saved-plan restore, and exported summary.
 
 | Symptom | Check |
 | --- | --- |
 | Port 3020 shows old content or fails to load the page | Run `npm run build`; Python serves `dist/`, not `src/`. |
 | The calculator works but AI uses built-in responses | Check the configured URL, model ID, credentials, and endpoint response. Try an actual completion. |
 | `ok: true` but chat fails | The probe also treats 401/404 as reachable. Check inference separately. |
-| Hosted backend returns “no endpoint” | Set the full chat-completions URL in the selected block. |
+| Hosted backend returns “no endpoint” | Set the full chat-completions URL in the selected block (or `MODAL_LLM_URL` on Vercel). |
 | A provider rejects the request | Check support for the fields in `server.py`, especially `reasoning_effort`. |
+| Chat returns 502 or times out on the first request after idle | The Modal container is cold-starting. Warm it with a `/v1/models` request, wait, and retry; consider a longer scale-down window. |
+| Modal returns 401 or 403 | Check the token, that `key` is `<token-id>.<token-secret>`, and that the URL matches the deployed app. |
+| “Model does not exist” error | The `model` value must exactly match the `id` returned by the endpoint’s `/v1/models`. |
+| Vercel `/api/backends` fails or shows `local` | Check that `BACKEND=modal` and the `MODAL_LLM_*` variables are set for the Production environment, then redeploy. |
+| Environment variable changes have no effect on Vercel | Variables apply to new deployments only; run `vercel --prod` again. `VITE_*` values also need a new build. |
+| `backend` is `local` and AI never responds (connection refused) | No LLM server is running at the `local` URL. Start one, or switch `backend` to `modal`. |
 | Photo controls are missing | Expected with the standard text-only bridge. |
 | Plans disappear or differ between URLs | Storage is scoped to the browser and origin, including port. Clearing site data, private browsing, or blocked storage can affect persistence. |
-
-The available npm scripts are `dev`, `build`, and `preview`. No automated test suite or `test` script is included. After changing calculations or conversation behavior, check the guided path, edited inputs, scenario comparisons, saved-plan restore, and exported summary.
 
 ## Educational resources
 
