@@ -1,61 +1,51 @@
 """Serve LifeLens and pass reading and explanations to a model.
 
 The coverage math stays in the page. The model only reads words and explains.
-Which model answers is set in llm.config.json, not in the page.
+Which model answers is set in .env, not in the page.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
+from dotenv import load_dotenv
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
-CONFIG_FILE = ROOT / "llm.config.json"
+load_dotenv(ROOT / ".env")
 
 
 def load_config() -> dict:
-    """llm.config.json is the only switch. Edit backend to "local" or "modal"."""
-    defaults = {
-        "backend": "local",
+    """Load the selected model endpoint and credentials from .env."""
+    return {
+        "backend": os.environ.get("BACKEND", os.environ.get("VITE_BACKEND", "local")).strip().lower(),
         "local": {
-            "url": "http://127.0.0.1:8000/v1/chat/completions",
-            "model": "Qwen/Qwen3.5-9B",
-            "key": "",
+            "url": os.environ.get("LOCAL_LLM_URL", "http://127.0.0.1:8000/v1/chat/completions"),
+            "model": os.environ.get("LOCAL_LLM_MODEL", "Qwen/Qwen3.5-9B"),
+            "key": os.environ.get("LOCAL_LLM_KEY", ""),
         },
         "modal": {
-            "url": "",
-            "model": "Qwen/Qwen3.5-9B",
-            "key": "",
+            "url": os.environ.get("MODAL_LLM_URL", ""),
+            "model": os.environ.get("MODAL_LLM_MODEL", "Qwen/Qwen3.5-9B"),
+            "key": os.environ.get("MODAL_LLM_KEY", ""),
         },
     }
-    if not CONFIG_FILE.is_file():
-        return defaults
-    try:
-        data = json.loads(CONFIG_FILE.read_text())
-    except (OSError, json.JSONDecodeError):
-        return defaults
-    if not isinstance(data, dict):
-        return defaults
-    for kind in ("local", "modal"):
-        block = data.get(kind)
-        if isinstance(block, dict):
-            defaults[kind].update({k: block.get(k, defaults[kind][k]) for k in ("url", "model", "key")})
-    if data.get("backend") in ("local", "modal"):
-        defaults["backend"] = data["backend"]
-    return defaults
 
 
 def active_spec() -> dict:
     cfg = load_config()
     kind = cfg["backend"]
+    if kind not in ("local", "modal"):
+        raise HTTPException(status_code=500, detail="BACKEND must be 'local' or 'modal'")
     block = cfg[kind]
     return {
         "id": kind,
@@ -67,6 +57,18 @@ def active_spec() -> dict:
 
 
 app = FastAPI(title="LifeLens V2")
+frontend_origins = [
+    origin.strip()
+    for origin in os.environ.get("FRONTEND_ORIGINS", "http://127.0.0.1:5174,http://localhost:5174").split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=frontend_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+)
 
 
 class CompleteIn(BaseModel):
@@ -140,7 +142,7 @@ def complete(body: CompleteIn) -> dict:
     if not spec["url"]:
         raise HTTPException(
             status_code=400,
-            detail="The selected model has no endpoint. Set it in llm.config.json.",
+            detail="The selected model has no endpoint. Set it in .env.",
         )
     messages = body.messages or [{"role": "user", "content": body.prompt or ""}]
     if body.json:

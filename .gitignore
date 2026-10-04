@@ -5,3 +5,4 @@ __pycache__/
 .vite
 llm.local.json
 llm.config.json
+.env

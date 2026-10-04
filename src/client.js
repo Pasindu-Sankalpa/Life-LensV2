@@ -1,6 +1,15 @@
-/** Talks to LifeLens /api/complete. The page still does every calculation. */
+/** Talks to the configured LifeLens API. The page still does every calculation. */
+const env = import.meta.env || {};
+const apiBase = String(
+  env.VITE_API_URL || (env.VITE_BACKEND === "modal" ? env.VITE_API_modal : env.VITE_API_local) || "",
+).replace(/\/$/, "");
+
+function apiPath(path) {
+  return `${apiBase}${path}`;
+}
+
 export async function listBackends() {
-  const response = await fetch("/api/backends");
+  const response = await fetch(apiPath("/api/backends"));
   if (!response.ok) {
     const err = new Error("backends");
     err.code = "upstream_error";
@@ -13,7 +22,7 @@ export function installModel() {
   if (window.claude && window.claude.__lifelens) return;
 
   const complete = async (body) => {
-    const response = await fetch("/api/complete", {
+    const response = await fetch(apiPath("/api/complete"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
