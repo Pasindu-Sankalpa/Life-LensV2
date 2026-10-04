@@ -1,4 +1,14 @@
-/** Talks to the local Qwen server. The page still does every calculation. */
+/** Talks to LifeLens /api/complete. The page still does every calculation. */
+export async function listBackends() {
+  const response = await fetch("/api/backends");
+  if (!response.ok) {
+    const err = new Error("backends");
+    err.code = "upstream_error";
+    throw err;
+  }
+  return response.json();
+}
+
 export function installModel() {
   if (window.claude && window.claude.__lifelens) return;
 
@@ -11,6 +21,7 @@ export function installModel() {
     if (!response.ok) {
       const err = new Error("model");
       err.code = "upstream_error";
+      try { err.detail = (await response.json()).detail; } catch { /* ignore */ }
       throw err;
     }
     return response.json();

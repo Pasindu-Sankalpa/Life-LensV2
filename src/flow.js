@@ -2,7 +2,7 @@ import { clamp, fmt, fmtK, h, pct, plural, reduceMotion, roundTo, roundUp } from
 import { P, S, SOURCES } from './state.js';
 import { CLS, LADDER, TERM20, TERMF, WHOLE, cap, cashValueAt, classRange, compute, gapAt, hasDependents, hasKids, hasPartner, healthShared, householdText, interp, kidName, kidsOf, money0, partnerPremium, partnerProfile, policyName, premium, premiumFor, rangeTxt, remainingSavings, riskClass, simulate, termEndCheck, termPlan, wealthProfile, youngestAge } from './engine.js';
 import { CARDS, SKIP, amountWidget, appendCard, askNode, editNode, live, md, meBubble, optButton, refresh, renderStages, say, scrollDown, setStage, stale, stream, toast } from './ui.js';
-import { photoFlow } from './ai.js';
+import { buildInsights, photoFlow, renderInsights, writeBrief } from './ai.js';
 import { scheduleSave } from './hero.js';
 
 /* ======================================================================
@@ -338,6 +338,7 @@ const NODES = [
     ack: p => p.cvDeposit ? `Done. Your **${fmtK(p.cvDeposit)}** goes into the cash value from day one.` : 'Okay. Your savings stay as they are.' },
   { id: 'policyCard', type: 'moment', stage: 'protection', when: p => !!p.policy && S.coverage > 0, render: renderPolicy },
   { id: 'wealth', type: 'moment', stage: 'protection', when: p => !!wealthProfile(p).tier, render: renderWealth },
+  { id: 'insights', type: 'moment', stage: 'protection', when: p => S.coverage > 0, render: renderInsights },
 
   /* ---------------- FAMILY ---------------- */
   { id: 'pIntro', stage: 'family',
@@ -500,8 +501,8 @@ function reactionText(p, C) {
 /* ---------- assumptions (quick mode) ---------- */
 function assumeWords(p) {
   return {
-    mortgagePlan: 'paying off the home', incomeYears: p.incomeYearsChoice === 'grown' ? 'income support until your kids are grown' : `income support for ${p.incomeYearsChoice} years`,
-    debts: 'no other debts', education: `${fmtK(p.educationPerKid || 50000)} per child for education`,
+    mortgagePlan: p.mortgagePlan === 'part' ? 'paying off half the home' : p.mortgagePlan === 'none' ? 'leaving the mortgage out' : 'paying off the home', incomeYears: p.incomeYearsChoice === 'grown' ? 'income support until your kids are grown' : `income support for ${p.incomeYearsChoice} years`,
+    debts: p.debts ? `${fmtK(p.debts)} in other debts` : 'no other debts', education: `${fmtK(p.educationPerKid || 50000)} per child for education`,
     cushion: `a ${fmtK(p.cushion || 25000)} cushion`, savings: 'no savings to draw on'
   };
 }
@@ -512,10 +513,13 @@ async function renderAssumptions() {
   appendAssumeChips(S.assumed.slice());
 }
 function appendAssumeChips(ids) {
-  const words = assumeWords(P());
-  const chips = h('div', { class: 'chips', style: { margin: '0 0 24px 40px' } },
-    ids.filter(id => words[id]).map(id => h('button', { class: 'chip', type: 'button', onclick: () => editNode(NODE[id], null) }, cap(words[id]))));
+  const chips = h('div', { class: 'chips', style: { margin: '0 0 24px 40px' } });
   stream.append(chips); S.log.push({ t: 'assume', ids }); scrollDown(true);
+  live(chips, () => {
+    const words = assumeWords(P());
+    chips.innerHTML = '';
+    for (const id of ids) if (words[id]) chips.append(h('button', { class: 'chip', type: 'button', onclick: () => editNode(NODE[id], null) }, cap(words[id])));
+  });
 }
 
 /* ---------- the reveal ---------- */
@@ -846,6 +850,7 @@ function buildRisk() {
   const card = h('div', { class: 'card' });
   card._init = () => live(card, () => {
     const p = P(), C = S.coverage || compute(p).tiers.balanced;
+    card.hidden = !healthShared(p.health) || !C; if (card.hidden) return;
     const pol = p.policy || { type: 'term', years: termPlan(p, C).T >= 30 ? 30 : termPlan(p, C).T > 10 ? 20 : 10 };
     card.innerHTML = '';
     card.append(h('h3', null, 'Your estimated price class'),
@@ -871,7 +876,7 @@ async function renderPolicy() {
 function buildPolicy() {
   const card = h('div', { class: 'card policy-card' });
   card._init = () => live(card, () => {
-    const p = P(), C = S.coverage, pol = p.policy; if (!pol || !C) return;
+    const p = P(), C = S.coverage, pol = p.policy; card.hidden = !pol || !C; if (card.hidden) return;
     const whole = pol.type === 'whole';
     const q = premium(p, C, pol.type, pol.years), rc = riskClass(p.health);
     card.innerHTML = '';
@@ -923,6 +928,7 @@ function buildWealth() {
   const card = h('div', { class: 'card wealth-card' });
   card._init = () => live(card, () => {
     const p = P(), w = wealthProfile(p), age = p.age || 45;
+    card.hidden = !w.tier; if (card.hidden) return;
     if (state.layer == null) state.layer = w.tier === 'high' ? 2000000 : 1000000;
     const reasons = { income: 'a higher income', assets: 'significant savings and investments', home: 'a high-value home', business: 'a business to protect' };
     const why = listJoin(w.why.map(x => reasons[x]).filter(Boolean)) || 'what you’ve shared';
@@ -967,7 +973,8 @@ async function renderPartnerPolicy() {
 function buildPartnerPolicy() {
   const card = h('div', { class: 'card' });
   card._init = () => live(card, () => {
-    const p = P(), pc = compute(partnerProfile(p)), C = pc.tiers.balanced; if (!C) return;
+    const p = P(), pc = compute(partnerProfile(p)), C = pc.tiers.balanced;
+    card.hidden = !hasPartner(p) || !p.partner.cover || !C; if (card.hidden) return;
     const pol = p.policy || { type: 'term', years: 20 }, H = p.partner.health, rc = riskClass(H);
     const q = partnerPremium(p, C, pol.type, pol.years);
     card.innerHTML = '';
@@ -997,7 +1004,9 @@ function buildFamily() {
   const sentence = h('p', { class: 'reaction' });
   const card = h('div', { class: 'card' }, h('h3', null, 'Your household has two plans'), h('p', { class: 'lede' }, 'Each side shows what would be needed if that person weren’t here, and what a sensible amount of coverage would protect.'), body, sentence);
   card._init = () => live(card, () => {
-    const p = P(), you = compute(p), pp = partnerProfile(p), them = compute(pp);
+    const p = P();
+    card.hidden = !(hasPartner(p) && p.partner.depends && p.partner.depends !== 'no'); if (card.hidden) return;
+    const you = compute(p), pp = partnerProfile(p), them = compute(pp);
     const Cy = S.coverage ?? you.tiers.balanced, Cp = them.tiers.balanced;
     const side = (title, c, C, prof) => h('div', { class: 'side' }, h('h4', null, title),
       h('div', { class: 'row' }, h('span', null, 'Would need'), h('b', null, fmtK(c.need))),
@@ -1275,7 +1284,7 @@ function buildExplore() {
     }
     drawAll(); card.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
   });
-  card._init = () => { drawAll(); live(card, () => { drawNums(); drawCompare(); drawFooter(); }); };
+  card._init = () => { drawAll(); live(card, () => { drawGrid(); drawNums(); drawCompare(); drawFooter(); }); };
   return card;
 }
 
@@ -1344,17 +1353,20 @@ async function renderHandoff() {
 }
 function buildHandoff() {
   const pre = h('pre');
-  const copyBtn = h('button', { class: 'btn', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(pre.textContent); copyBtn.textContent = 'Copied'; } catch { const r = document.createRange(); r.selectNodeContents(pre); const s = getSelection(); s.removeAllRanges(); s.addRange(r); copyBtn.textContent = 'Selected, press Ctrl+C'; } setTimeout(() => copyBtn.textContent = 'Copy summary', 2200); } }, 'Copy summary');
-  const dlBtn = h('button', { class: 'btn secondary', type: 'button', onclick: async () => { const r = await downloadText('lincolnlens-plan.txt', pre.textContent); if (r === 'saved') toast('Plan summary ready.'); } }, 'Download');
+  const briefEl = h('div', { class: 'brief' });
+  const briefBtn = h('button', { class: 'btn secondary', type: 'button', onclick: () => writeBrief(briefEl, briefBtn) }, 'Write an advisor brief');
+  const fullText = () => (briefEl.dataset.text ? 'ADVISOR BRIEF\n' + briefEl.dataset.text + '\n\n' : '') + pre.textContent;
+  const copyBtn = h('button', { class: 'btn', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(fullText()); copyBtn.textContent = 'Copied'; } catch { const r = document.createRange(); r.selectNodeContents(pre); const s = getSelection(); s.removeAllRanges(); s.addRange(r); copyBtn.textContent = 'Selected, press Ctrl+C'; } setTimeout(() => copyBtn.textContent = 'Copy summary', 2200); } }, 'Copy summary');
+  const dlBtn = h('button', { class: 'btn secondary', type: 'button', onclick: async () => { const r = await downloadText('lincolnlens-plan.txt', fullText()); if (r === 'saved') toast('Plan summary ready.'); } }, 'Download');
   const card = h('div', { class: 'card handoff' }, h('h3', null, 'Your plan, ready to share'),
     h('p', { class: 'lede' }, 'A licensed professional can turn this into real quotes and check the details that matter for your situation.'),
-    pre, h('div', { class: 'actions' }, copyBtn, dlBtn, h('button', { class: 'btn quiet', type: 'button', onclick: () => { document.getElementById('ask').focus(); } }, 'Ask a question first')));
+    briefEl, pre, h('div', { class: 'actions' }, briefBtn, copyBtn, dlBtn, h('button', { class: 'btn quiet', type: 'button', onclick: () => { document.getElementById('ask').focus(); } }, 'Ask a question first')));
   card._init = () => live(card, () => { pre.textContent = summaryText(); });
   return card;
 }
 
 function registerCards() {
-  Object.assign(CARDS, { reveal: buildReveal, sandbox: buildSandbox, timeline: buildTimeline, tvw: buildTvw, family: buildFamily, explore: buildExplore, handoff: buildHandoff, risk: buildRisk, policy: buildPolicy, wealth: buildWealth, partnerPolicy: buildPartnerPolicy });
+  Object.assign(CARDS, { reveal: buildReveal, sandbox: buildSandbox, timeline: buildTimeline, tvw: buildTvw, family: buildFamily, explore: buildExplore, handoff: buildHandoff, risk: buildRisk, policy: buildPolicy, wealth: buildWealth, partnerPolicy: buildPartnerPolicy, insights: buildInsights });
 }
 
 

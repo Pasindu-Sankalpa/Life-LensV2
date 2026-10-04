@@ -1,7 +1,7 @@
 import { $, fmtK, h, reduceMotion, wait } from './dom.js';
 import { P, S, emptyHealth, freshProfile } from './state.js';
 import { compute, householdText } from './engine.js';
-import { CARDS, appendCard, convo, meBubble, openRows, refresh, renderPlan, renderStages, say, sayNow, seenRows, stageBreak, stream, toast } from './ui.js';
+import { CARDS, appendCard, convo, markStale, meBubble, openRows, refresh, renderPlan, renderStages, say, sayNow, seenRows, stageBreak, stream, toast } from './ui.js';
 import { NODE, appendAssumeChips, clone, registerCards, run } from './flow.js';
 import { askQuestion, closeDrawer, drawerOpen, initAI, openDrawer, photoFlow, startFromText } from './ai.js';
 
@@ -115,7 +115,7 @@ function openPlan(id) {
     if (i === skip) return;
     try {
       if (e.t === 'll') sayNow(e.parts, e.askId);
-      else if (e.t === 'me') meBubble(e.text, e.nodeId ? NODE[e.nodeId] : null);
+      else if (e.t === 'me') { const row = meBubble(e.text, e.nodeId ? NODE[e.nodeId] : null); if (e.stale) markStale(row, 'Changed later'); }
       else if (e.t === 'stage') stageBreak(e.st);
       else if (e.t === 'card' && CARDS[e.kind]) appendCard(e.kind);
       else if (e.t === 'assume') appendAssumeChips(e.ids || []);
@@ -169,8 +169,20 @@ function buildMyPlan() {
 function openNav() { $('#sideNav').classList.add('open'); $('#navScrim').hidden = false; $('#navToggle').setAttribute('aria-expanded', 'true'); }
 function closeNav() { $('#sideNav').classList.remove('open'); $('#navScrim').hidden = true; $('#navToggle').setAttribute('aria-expanded', 'false'); }
 
-/* wiring */
-$('#askForm').addEventListener('submit', e => { e.preventDefault(); const i = $('#ask'); const v = i.value; i.value = ''; askQuestion(v); });
+/* wiring — Enter and the Ask button send directly, so a blocked form submit cannot swallow the message */
+function sendAsk() {
+  const i = $('#ask');
+  if (!i) return;
+  const v = i.value;
+  i.value = '';
+  askQuestion(v);
+}
+$('#ask').addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+  e.preventDefault();
+  sendAsk();
+});
+$('#askBtn').addEventListener('click', sendAsk);
 $('#openWork').addEventListener('click', openDrawer);
 $('#drawerWrap').addEventListener('click', e => { if (e.target.closest('[data-close]')) closeDrawer(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (drawerOpen) closeDrawer(); closeNav(); } });

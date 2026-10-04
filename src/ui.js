@@ -1,7 +1,8 @@
 import { $, clamp, fmtK, h, reduceMotion, wait } from './dom.js';
 import { P, S } from './state.js';
-import { compute, hasPartner, partnerPremium, partnerProfile, policyName, premium, rangeTxt, riskClass, simulate } from './engine.js';
-import { photoButton, renderDrawer, renderSuggest } from './ai.js';
+import { compute, hasPartner, kidsOf, partnerPremium, partnerProfile, policyName, premium, rangeTxt, riskClass, simulate } from './engine.js';
+import { NODES, appendAssumeChips, assumeWords, listJoin, run } from './flow.js';
+import { addAskAbout, photoButton, renderDrawer, renderSuggest } from './ai.js';
 import { scheduleSave } from './hero.js';
 
 /* ======================================================================
@@ -62,6 +63,7 @@ function meBubble(content, node, logText) {
     bubble);
   stream.append(row); scrollDown(true);
   row._entry = { t: 'me', text: typeof content === 'string' ? content : (logText || 'Shared a photo'), nodeId: node ? node.id : null };
+  if (node) row.dataset.node = node.id;
   S.log.push(row._entry); scheduleSave();
   return row;
 }
@@ -78,6 +80,7 @@ function appendCard(kind) {
   card.dataset.kind = kind;
   stream.append(card);
   if (card._init) card._init();
+  addAskAbout(card, kind);
   S.log.push({ t: 'card', kind });
   scrollDown(true); scheduleSave();
   return card;
@@ -241,8 +244,14 @@ function hwWidget(cfg, done) {
     h('div', { class: 'amount hw' }, h('div', { class: 'hw-row' }, h('div', { class: 'hw-f' }, h('span', { class: 'lbl' }, 'Height'), ft, inch), h('label', { class: 'hw-f' }, h('span', { class: 'lbl' }, 'Weight'), wt, h('span', { class: 'unit' }, 'lb'))), err),
     h('div', { class: 'actions' }, go, h('button', { class: 'btn quiet', type: 'button', onclick: () => done('na') }, 'Prefer not to say')));
 }
-function buildWidget(node, done) {
-  const w = typeof node.widget === 'function' ? node.widget(P()) : node.widget;
+const CURRENT = {
+  age: p => p.age, income: p => p.income, mortgage: p => p.mortgage, debts: p => p.debts, savings: p => p.savings, coverageAmt: p => p.coverage,
+  childcare: p => p.childcareAnnual, pAge: p => p.partner.age, pCovAmt: p => p.partner.coverage, pChildcareCost: p => p.partner.childcareAnnual
+};
+function buildWidget(node, done, editing) {
+  let w = typeof node.widget === 'function' ? node.widget(P()) : node.widget;
+  if (editing && w.type === 'amount' && CURRENT[node.id] && CURRENT[node.id](P()) != null) w = { ...w, initial: CURRENT[node.id](P()) };
+  if (editing && w.type === 'kids') w = { ...w, initial: kidsOf(P()) };
   switch (w.type) {
     case 'choice': return choiceWidget(w, done);
     case 'multi': return multiWidget(w, done);
@@ -269,7 +278,14 @@ function askNode(node) {
     wEl.append(buildWidget(node, v => finish(v)));
     stream.append(wEl); scrollDown(true);
     // `skip` lets a typed message answer this question instead of the buttons
-    S.active = { qEl, wEl, node, skip: () => finish(SKIP), choose: v => finish({ __typed: true, v }) };
+    S.active = { qEl, wEl, node, skip: () => finish(SKIP), choose: v => finish({ __typed: true, v }),
+      // redraw the question and its choices from the current plan (e.g. after a change made in chat)
+      rebuild: () => {
+        if (settled) return;
+        const body = qEl.querySelector('.body'), q = node.ask(P());
+        if (body) { body.innerHTML = ''; renderParts(body, Array.isArray(q) ? q : [q]); }
+        wEl.innerHTML = ''; wEl.append(buildWidget(node, v => finish(v)));
+      } };
     renderSuggest();
   });
 }
@@ -285,10 +301,10 @@ function editNode(node, row) {
     h('div', { class: 'msg ll' }, markEl(), h('div', null, h('p', { class: 'q', html: md(typeof qq === 'string' ? qq : qq.q) }))),
     h('div', { class: 'widget' }, buildWidget(node, (v) => {
       node.apply(P(), v, true);
-      if (row) { const b = row.querySelector('.bubble'); const t = node.label(v, P()); if (b) b.textContent = t; if (row._entry) row._entry.text = t; }
-      close(); refresh();
+      if (row) { const b = row.querySelector('.bubble'); const t = node.label(v, P()); if (b) b.textContent = t; if (row._entry) { row._entry.text = t; row._entry.stale = false; } row.classList.remove('stale'); }
+      close(); refresh(); syncAfterChange();
       toast(`Updated. Your plan has been recalculated.`);
-    })),
+    }, true)),
     h('div', { class: 'actions' }, h('button', { class: 'btn quiet small', type: 'button', onclick: close }, 'Cancel')));
   wrapEl.append(scrim, modal);
   document.body.append(wrapEl);
@@ -385,6 +401,7 @@ function renderPlan() {
 }
 function refresh() {
   if (S.tierPick && S.coverage != null) S.coverage = compute(P()).tiers[S.tierPick];
+  renderStages();
   renderPlan();
   for (const fn of [...S.live]) { try { if (fn() === false) S.live.delete(fn); } catch (e) { console.error(e); S.live.delete(fn); } }
   renderDrawer(true);
@@ -393,5 +410,34 @@ function refresh() {
 }
 function live(el, fn) { const f = () => { if (!el.isConnected) return false; fn(); }; S.live.add(f); fn(); return el; }
 
+/* after any change to the plan (chat, Undo, editing an answer): keep the open question current,
+   skip it if it no longer applies, and ask anything the change made relevant */
+function syncAfterChange() {
+  if (!S.started || S.restoring || S.pending) return;
+  const p = P();
+  if (S.active) {
+    const n = S.active.node;
+    if (n.when && !n.when(p)) { S.active.skip(); return; }
+    S.active.rebuild(); return;
+  }
+  if (S.running) return;
+  const open = NODES.filter(n => !S.done.has(n.id) && (!n.when || n.when(p)) && !(n.type !== 'moment' && n.known && n.known(p)));
+  if (!open.length) return;
+  const asks = open.some(n => n.type !== 'moment' && !(S.quick && n.quick));
+  const before = S.assumed.length;
+  (asks ? say('That changes a few things, so a couple of quick questions about it.') : Promise.resolve())
+    .then(() => run())
+    .then(() => {
+      const added = S.assumed.slice(before), words = assumeWords(P()), list = added.map(id => words[id]).filter(Boolean);
+      if (list.length) return say([`I also assumed ${listJoin(list)}.`, { sub: 'Tap to change it.' }]).then(() => appendAssumeChips(added));
+    }).catch(() => {});
+}
+function markStale(row, note) {
+  if (!row || row.classList.contains('stale')) return;
+  row.classList.add('stale');
+  row.querySelector('.bubble').append(h('span', { class: 'stale-note' }, note || 'Updated later'));
+  if (row._entry) row._entry.stale = true;
+}
 
-export { CARDS, MARK_SVG, SKIP, STAGES, amountWidget, appendCard, askNode, bandWidget, buildWidget, choiceWidget, convo, editNode, hwWidget, kidsWidget, live, logParts, markEl, md, meBubble, multiWidget, openRows, optButton, planRow, refresh, renderParts, renderPlan, renderStages, say, sayNow, scrollDown, seenRows, setStage, stageBreak, stale, stream, toast };
+
+export { CARDS, CURRENT, MARK_SVG, SKIP, STAGES, amountWidget, appendCard, askNode, bandWidget, buildWidget, choiceWidget, convo, editNode, hwWidget, kidsWidget, live, logParts, markEl, markStale, md, meBubble, multiWidget, openRows, optButton, planRow, refresh, renderParts, renderPlan, renderStages, say, sayNow, scrollDown, seenRows, setStage, stageBreak, stale, stream, syncAfterChange, toast };

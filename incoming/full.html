@@ -410,6 +410,9 @@ body.on-landing .app{visibility:hidden}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(110,31,71,.45)}100%{box-shadow:0 0 0 14px rgba(110,31,71,0)}}
 @media (max-width: 560px){ .suggest{flex-wrap:nowrap; overflow-x:auto; padding-bottom:2px; scrollbar-width:none} }
 
+.msg.me.stale .bubble{opacity:.7}
+.stale-note{display:block; font-size:.75rem; color:var(--ink-3); margin-top:2px}
+
 /* ---------- responsive ---------- */
 @media (max-width: 1240px){
   .main{grid-template-columns:minmax(0,1fr) 340px}
@@ -1020,6 +1023,7 @@ function meBubble(content, node, logText) {
     bubble);
   stream.append(row); scrollDown(true);
   row._entry = { t: 'me', text: typeof content === 'string' ? content : (logText || 'Shared a photo'), nodeId: node ? node.id : null };
+  if (node) row.dataset.node = node.id;
   S.log.push(row._entry); scheduleSave();
   return row;
 }
@@ -1199,8 +1203,14 @@ function hwWidget(cfg, done) {
     h('div', { class: 'amount hw' }, h('div', { class: 'hw-row' }, h('div', { class: 'hw-f' }, h('span', { class: 'lbl' }, 'Height'), ft, inch), h('label', { class: 'hw-f' }, h('span', { class: 'lbl' }, 'Weight'), wt, h('span', { class: 'unit' }, 'lb'))), err),
     h('div', { class: 'actions' }, go, h('button', { class: 'btn quiet', type: 'button', onclick: () => done('na') }, 'Prefer not to say')));
 }
-function buildWidget(node, done) {
-  const w = typeof node.widget === 'function' ? node.widget(P()) : node.widget;
+const CURRENT = {
+  age: p => p.age, income: p => p.income, mortgage: p => p.mortgage, debts: p => p.debts, savings: p => p.savings, coverageAmt: p => p.coverage,
+  childcare: p => p.childcareAnnual, pAge: p => p.partner.age, pCovAmt: p => p.partner.coverage, pChildcareCost: p => p.partner.childcareAnnual
+};
+function buildWidget(node, done, editing) {
+  let w = typeof node.widget === 'function' ? node.widget(P()) : node.widget;
+  if (editing && w.type === 'amount' && CURRENT[node.id] && CURRENT[node.id](P()) != null) w = { ...w, initial: CURRENT[node.id](P()) };
+  if (editing && w.type === 'kids') w = { ...w, initial: kidsOf(P()) };
   switch (w.type) {
     case 'choice': return choiceWidget(w, done);
     case 'multi': return multiWidget(w, done);
@@ -1227,7 +1237,14 @@ function askNode(node) {
     wEl.append(buildWidget(node, v => finish(v)));
     stream.append(wEl); scrollDown(true);
     // `skip` lets a typed message answer this question instead of the buttons
-    S.active = { qEl, wEl, node, skip: () => finish(SKIP), choose: v => finish({ __typed: true, v }) };
+    S.active = { qEl, wEl, node, skip: () => finish(SKIP), choose: v => finish({ __typed: true, v }),
+      // redraw the question and its choices from the current plan (e.g. after a change made in chat)
+      rebuild: () => {
+        if (settled) return;
+        const body = qEl.querySelector('.body'), q = node.ask(P());
+        if (body) { body.innerHTML = ''; renderParts(body, Array.isArray(q) ? q : [q]); }
+        wEl.innerHTML = ''; wEl.append(buildWidget(node, v => finish(v)));
+      } };
     renderSuggest();
   });
 }
@@ -1243,10 +1260,10 @@ function editNode(node, row) {
     h('div', { class: 'msg ll' }, markEl(), h('div', null, h('p', { class: 'q', html: md(typeof qq === 'string' ? qq : qq.q) }))),
     h('div', { class: 'widget' }, buildWidget(node, (v) => {
       node.apply(P(), v, true);
-      if (row) { const b = row.querySelector('.bubble'); const t = node.label(v, P()); if (b) b.textContent = t; if (row._entry) row._entry.text = t; }
-      close(); refresh();
+      if (row) { const b = row.querySelector('.bubble'); const t = node.label(v, P()); if (b) b.textContent = t; if (row._entry) { row._entry.text = t; row._entry.stale = false; } row.classList.remove('stale'); }
+      close(); refresh(); syncAfterChange();
       toast(`Updated. Your plan has been recalculated.`);
-    })),
+    }, true)),
     h('div', { class: 'actions' }, h('button', { class: 'btn quiet small', type: 'button', onclick: close }, 'Cancel')));
   wrapEl.append(scrim, modal);
   document.body.append(wrapEl);
@@ -1343,6 +1360,7 @@ function renderPlan() {
 }
 function refresh() {
   if (S.tierPick && S.coverage != null) S.coverage = compute(P()).tiers[S.tierPick];
+  renderStages();
   renderPlan();
   for (const fn of [...S.live]) { try { if (fn() === false) S.live.delete(fn); } catch (e) { console.error(e); S.live.delete(fn); } }
   renderDrawer(true);
@@ -1350,6 +1368,35 @@ function refresh() {
   scheduleSave();
 }
 function live(el, fn) { const f = () => { if (!el.isConnected) return false; fn(); }; S.live.add(f); fn(); return el; }
+
+/* after any change to the plan (chat, Undo, editing an answer): keep the open question current,
+   skip it if it no longer applies, and ask anything the change made relevant */
+function syncAfterChange() {
+  if (!S.started || S.restoring || S.pending) return;
+  const p = P();
+  if (S.active) {
+    const n = S.active.node;
+    if (n.when && !n.when(p)) { S.active.skip(); return; }
+    S.active.rebuild(); return;
+  }
+  if (S.running) return;
+  const open = NODES.filter(n => !S.done.has(n.id) && (!n.when || n.when(p)) && !(n.type !== 'moment' && n.known && n.known(p)));
+  if (!open.length) return;
+  const asks = open.some(n => n.type !== 'moment' && !(S.quick && n.quick));
+  const before = S.assumed.length;
+  (asks ? say('That changes a few things, so a couple of quick questions about it.') : Promise.resolve())
+    .then(() => run())
+    .then(() => {
+      const added = S.assumed.slice(before), words = assumeWords(P()), list = added.map(id => words[id]).filter(Boolean);
+      if (list.length) return say([`I also assumed ${listJoin(list)}.`, { sub: 'Tap to change it.' }]).then(() => appendAssumeChips(added));
+    }).catch(() => {});
+}
+function markStale(row, note) {
+  if (!row || row.classList.contains('stale')) return;
+  row.classList.add('stale');
+  row.querySelector('.bubble').append(h('span', { class: 'stale-note' }, note || 'Updated later'));
+  if (row._entry) row._entry.stale = true;
+}
 
 /* ======================================================================
    Conversation script
@@ -1846,8 +1893,8 @@ function reactionText(p, C) {
 /* ---------- assumptions (quick mode) ---------- */
 function assumeWords(p) {
   return {
-    mortgagePlan: 'paying off the home', incomeYears: p.incomeYearsChoice === 'grown' ? 'income support until your kids are grown' : `income support for ${p.incomeYearsChoice} years`,
-    debts: 'no other debts', education: `${fmtK(p.educationPerKid || 50000)} per child for education`,
+    mortgagePlan: p.mortgagePlan === 'part' ? 'paying off half the home' : p.mortgagePlan === 'none' ? 'leaving the mortgage out' : 'paying off the home', incomeYears: p.incomeYearsChoice === 'grown' ? 'income support until your kids are grown' : `income support for ${p.incomeYearsChoice} years`,
+    debts: p.debts ? `${fmtK(p.debts)} in other debts` : 'no other debts', education: `${fmtK(p.educationPerKid || 50000)} per child for education`,
     cushion: `a ${fmtK(p.cushion || 25000)} cushion`, savings: 'no savings to draw on'
   };
 }
@@ -1858,10 +1905,13 @@ async function renderAssumptions() {
   appendAssumeChips(S.assumed.slice());
 }
 function appendAssumeChips(ids) {
-  const words = assumeWords(P());
-  const chips = h('div', { class: 'chips', style: { margin: '0 0 24px 40px' } },
-    ids.filter(id => words[id]).map(id => h('button', { class: 'chip', type: 'button', onclick: () => editNode(NODE[id], null) }, cap(words[id]))));
+  const chips = h('div', { class: 'chips', style: { margin: '0 0 24px 40px' } });
   stream.append(chips); S.log.push({ t: 'assume', ids }); scrollDown(true);
+  live(chips, () => {
+    const words = assumeWords(P());
+    chips.innerHTML = '';
+    for (const id of ids) if (words[id]) chips.append(h('button', { class: 'chip', type: 'button', onclick: () => editNode(NODE[id], null) }, cap(words[id])));
+  });
 }
 
 /* ---------- the reveal ---------- */
@@ -2192,6 +2242,7 @@ function buildRisk() {
   const card = h('div', { class: 'card' });
   card._init = () => live(card, () => {
     const p = P(), C = S.coverage || compute(p).tiers.balanced;
+    card.hidden = !healthShared(p.health) || !C; if (card.hidden) return;
     const pol = p.policy || { type: 'term', years: termPlan(p, C).T >= 30 ? 30 : termPlan(p, C).T > 10 ? 20 : 10 };
     card.innerHTML = '';
     card.append(h('h3', null, 'Your estimated price class'),
@@ -2217,7 +2268,7 @@ async function renderPolicy() {
 function buildPolicy() {
   const card = h('div', { class: 'card policy-card' });
   card._init = () => live(card, () => {
-    const p = P(), C = S.coverage, pol = p.policy; if (!pol || !C) return;
+    const p = P(), C = S.coverage, pol = p.policy; card.hidden = !pol || !C; if (card.hidden) return;
     const whole = pol.type === 'whole';
     const q = premium(p, C, pol.type, pol.years), rc = riskClass(p.health);
     card.innerHTML = '';
@@ -2269,6 +2320,7 @@ function buildWealth() {
   const card = h('div', { class: 'card wealth-card' });
   card._init = () => live(card, () => {
     const p = P(), w = wealthProfile(p), age = p.age || 45;
+    card.hidden = !w.tier; if (card.hidden) return;
     if (state.layer == null) state.layer = w.tier === 'high' ? 2000000 : 1000000;
     const reasons = { income: 'a higher income', assets: 'significant savings and investments', home: 'a high-value home', business: 'a business to protect' };
     const why = listJoin(w.why.map(x => reasons[x]).filter(Boolean)) || 'what you’ve shared';
@@ -2313,7 +2365,8 @@ async function renderPartnerPolicy() {
 function buildPartnerPolicy() {
   const card = h('div', { class: 'card' });
   card._init = () => live(card, () => {
-    const p = P(), pc = compute(partnerProfile(p)), C = pc.tiers.balanced; if (!C) return;
+    const p = P(), pc = compute(partnerProfile(p)), C = pc.tiers.balanced;
+    card.hidden = !hasPartner(p) || !p.partner.cover || !C; if (card.hidden) return;
     const pol = p.policy || { type: 'term', years: 20 }, H = p.partner.health, rc = riskClass(H);
     const q = partnerPremium(p, C, pol.type, pol.years);
     card.innerHTML = '';
@@ -2343,7 +2396,9 @@ function buildFamily() {
   const sentence = h('p', { class: 'reaction' });
   const card = h('div', { class: 'card' }, h('h3', null, 'Your household has two plans'), h('p', { class: 'lede' }, 'Each side shows what would be needed if that person weren’t here, and what a sensible amount of coverage would protect.'), body, sentence);
   card._init = () => live(card, () => {
-    const p = P(), you = compute(p), pp = partnerProfile(p), them = compute(pp);
+    const p = P();
+    card.hidden = !(hasPartner(p) && p.partner.depends && p.partner.depends !== 'no'); if (card.hidden) return;
+    const you = compute(p), pp = partnerProfile(p), them = compute(pp);
     const Cy = S.coverage ?? you.tiers.balanced, Cp = them.tiers.balanced;
     const side = (title, c, C, prof) => h('div', { class: 'side' }, h('h4', null, title),
       h('div', { class: 'row' }, h('span', null, 'Would need'), h('b', null, fmtK(c.need))),
@@ -2621,7 +2676,7 @@ function buildExplore() {
     }
     drawAll(); card.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
   });
-  card._init = () => { drawAll(); live(card, () => { drawNums(); drawCompare(); drawFooter(); }); };
+  card._init = () => { drawAll(); live(card, () => { drawGrid(); drawNums(); drawCompare(); drawFooter(); }); };
   return card;
 }
 
@@ -2914,6 +2969,25 @@ function intakeChips(f) {
   if (f.businessOwner) chips.push(['businessOwner', 'Owns a business']);
   return chips;
 }
+function profileFacts(p) {
+  return { age: p.age, household: p.household, kids: kidsOf(p), income: p.income, housing: p.housing, mortgage: p.mortgage, debts: p.debts,
+    savings: p.savings, coverage: p.coverage, coverageSource: p.coverageSource, partnerIncome: p.partner.income, investments: p.assets, businessOwner: p.businessOwner };
+}
+function clearFact(k) {
+  const p = P();
+  if (k === 'age') p.age = null;
+  else if (k === 'household') { p.household = null; p.kids = []; }
+  else if (k === 'income') p.income = null;
+  else if (k === 'housing') { p.housing = null; p.mortgage = null; p.mortgagePlan = null; }
+  else if (k === 'mortgage') p.mortgage = null;
+  else if (k === 'debts') p.debts = null;
+  else if (k === 'savings') { p.savings = null; p.savingsUse = null; }
+  else if (k === 'coverage') { p.coverage = null; p.coverageSource = null; }
+  else if (k === 'partnerIncome') p.partner.income = null;
+  else if (k === 'investments') { if (p.savings === p.assets) { p.savings = null; p.savingsUse = null; } p.assets = null; }
+  else if (k === 'businessOwner') p.businessOwner = null;
+  renderStages();
+}
 function applyIntake(f) {
   const p = P();
   if (f.age) p.age = f.age;
@@ -2946,15 +3020,22 @@ async function startFromText(text) {
   if (stale(tok)) return;
   const chips = intakeChips(found);
   if (!chips.length) { await say('I couldn’t pick out the details from that, so let’s go one question at a time.'); return run(); }
-  await say(['Here’s what I caught.', { sub: 'Remove anything I got wrong. I’ll ask about the rest.' }]);
-  const keep = new Set(chips.map(c => c[0]));
+  // apply what was read right away, so the card, the plan and anything said in chat stay the same thing
+  applyIntake(found);
+  await say(['Here’s what I caught.', { sub: 'Remove anything I got wrong, or tell me what to change. I’ll ask about the rest.' }]);
   let typedPick = false;
   const box = h('div', { class: 'widget' });
-  const chipsEl = h('div', { class: 'chips' }, chips.map(([k, label]) => { const c = h('span', { class: 'chip' }, label, h('button', { type: 'button', 'aria-label': `Remove ${label}`, onclick: () => { keep.delete(k); c.remove(); } }, '×')); return c; }));
+  const chipsEl = h('div', { class: 'chips' });
+  const drawChips = () => {
+    chipsEl.innerHTML = '';
+    const chips = intakeChips(profileFacts(P()));
+    if (!chips.length) { chipsEl.append(h('span', { class: 'note', style: { margin: 0 } }, 'Nothing yet. I’ll ask as we go.')); return; }
+    for (const [k, label] of chips) chipsEl.append(h('span', { class: 'chip' }, label, h('button', { type: 'button', 'aria-label': `Remove ${label}`, onclick: () => { clearFact(k); refresh(); } }, '×')));
+  };
   const choice = await new Promise(resolve => {
     S.pending = { el: box, onText: t => {
       const s = t.toLowerCase();
-      const pick = /walk|through|step|full|slow/.test(s) ? 'full' : /quick|fast|yes|right|correct|good|looks|ok|okay|yep|sure/.test(s) ? 'quick' : null;
+      const pick = /walk|through|step|full|slow/.test(s) ? 'full' : /^\s*(quick|fast|yes|right|correct|good|looks (right|good)|ok|okay|yep|sure|that'?s right)\b/.test(s) ? 'quick' : null;
       if (!pick || looksLikeQuestion(t)) return false;
       typedPick = true; resolve(pick); return true;
     } };
@@ -2962,14 +3043,14 @@ async function startFromText(text) {
       h('div', { class: 'actions' },
         h('button', { class: 'btn', type: 'button', onclick: () => resolve('quick') }, 'Looks right, keep it quick'),
         h('button', { class: 'btn secondary', type: 'button', onclick: () => resolve('full') }, 'Looks right, walk me through it')));
-    stream.append(box); scrollDown(true);
+    stream.append(box);
+    live(box, drawChips);
+    scrollDown(true);
   });
   S.pending = null;
   if (stale(tok)) return;
   box.remove();
-  const f = {}; for (const k of keep) { if (k === 'household') { f.household = found.household; f.kids = found.kids; } else if (k === 'housing') f.housing = found.housing; else if (k === 'coverage') { f.coverage = found.coverage; f.coverageSource = found.coverageSource; } else f[k] = found[k]; }
   if (!typedPick) meBubble(choice === 'quick' ? 'Looks right, keep it quick' : 'Looks right, walk me through it', null);
-  applyIntake(f);
   S.quick = choice === 'quick';
   await say(S.quick ? 'Great. I’ll ask only what I still need and fill in common assumptions you can change later.' : 'Great. That saves us a few questions.');
   run();
@@ -3102,7 +3183,7 @@ Reply with ONLY one JSON object and nothing else: {"reply": "...", "action": nul
 - Tone: warm and steady, never alarming. Say "if you weren't here" rather than "death" or "die".
 
 "action": when they tell you a fact about themselves, ask to change something, or ask to see or try something, return ONE of these. Otherwise null.
-{"type":"update","field":F,"value":V}  F is one of: age, income, mortgage, debts, savings, savingsUse, existingCoverage, cushion, educationPerKid, childcareAnnual, incomeYears, kids, partnerIncome, partnerAge. V is dollars or years as a number ("85k" means 85000), "grown" for incomeYears, or an array of ages for kids. Only use values they actually stated.
+{"type":"update","field":F,"value":V}  F is one of: household ("just_me", "partner", "children" or "partner_children"), age, income, mortgage, debts, savings, savingsUse, existingCoverage, cushion, educationPerKid, childcareAnnual, incomeYears, kids, partnerIncome, partnerAge. V is dollars or years as a number ("85k" means 85000), "grown" for incomeYears, or an array of ages for kids. Only use values they actually stated.
 {"type":"policy","value":"term10"|"term20"|"term30"|"whole"}
 {"type":"coverage","value":number}   a coverage amount they want to try
 {"type":"show","value":"plan"|"timeline"|"amounts"|"policy"|"price"|"options"|"family"|"scenarios"|"numbers"}
@@ -3131,9 +3212,22 @@ const UPDATES = {
   childcareAnnual: { min: 0, max: 100000, money: true, set: (p, v) => { p.childcareAnnual = v; p.kidGoals = [...new Set([...(p.kidGoals || []).filter(x => x !== 'none'), 'childcare'])]; }, say: v => `childcare to ${fmtK(v)} a year` },
   incomeYears: { min: 1, max: 40, set: (p, v) => { p.incomeYearsChoice = v; p.incomeYears = v === 'grown' ? null : v; }, say: v => v === 'grown' ? 'income support to last until your kids are grown' : `income support to ${v} years` },
   kids: { set: (p, v) => { p.kids = v; if (v.length && !kidsHousehold(p)) p.household = hasPartner(p) ? 'partner_children' : 'children'; }, say: v => `your children’s ages to ${listJoin(v.map(String))}` },
+  household: { set: (p, v) => {
+      const kids = kidsOf(p).length > 0;
+      if (v === 'partner' && kids) v = 'partner_children';
+      if (v === 'just_me' && kids) v = 'children';
+      p.household = v; if (!['children', 'partner_children'].includes(v)) p.kids = [];
+      renderStages();
+    }, say: v => ({ just_me: 'your household to just you', partner: 'your household to include your partner', children: 'your household to include your children', partner_children: 'your household to include your partner and children', other: 'your household to someone else who relies on you' })[v] || 'your household' },
   partnerIncome: { min: 0, max: 5e6, money: true, set: (p, v) => { p.partner.income = v; }, say: v => `your partner’s income to ${fmtK(v)}` },
   partnerAge: { min: 18, max: 90, set: (p, v) => { p.partner.age = v; }, say: v => `your partner’s age to ${v}` }
 };
+const FIELD_NODES = { age: ['age'], income: ['income'], mortgage: ['mortgage'], debts: ['debts'], savings: ['savings'], savingsUse: ['savingsUse'], existingCoverage: ['coverageHave', 'coverageAmt'], cushion: ['cushion'], educationPerKid: ['education'], childcareAnnual: ['childcare'], incomeYears: ['incomeYears'], kids: ['kids'], household: ['household', 'kids'], partnerIncome: ['pIncome'], partnerAge: ['pAge'] };
+function markAnswersChanged(ids) {
+  const rows = [];
+  for (const id of ids) stream.querySelectorAll(`.msg.me[data-node="${id}"]`).forEach(r => { if (!r.classList.contains('stale')) { markStale(r, 'Changed in chat'); rows.push(r); } });
+  return rows;
+}
 const SHOW_CARDS = { timeline: 'timeline', amounts: 'sandbox', policy: 'policy', price: 'risk', options: 'wealth', family: 'family', scenarios: 'explore' };
 const SHOW_NAMES = { timeline: 'your year-by-year timeline', amounts: 'the coverage slider', policy: 'your policy', price: 'your price class', options: 'the premium options', family: 'your household’s two plans', scenarios: 'the scenarios', plan: 'your plan', numbers: '“Behind the numbers”' };
 /* validate and carry out one action; returns what to tell the person and what to do after the reply shows */
@@ -3143,7 +3237,9 @@ function applyAction(act) {
   if (type === 'update') {
     const spec = UPDATES[act.field]; if (!spec) return null;
     let v = act.value;
-    if (act.field === 'kids') {
+    if (act.field === 'household') {
+      if (!['just_me', 'partner', 'children', 'partner_children', 'other'].includes(v)) return null;
+    } else if (act.field === 'kids') {
       if (!Array.isArray(v)) return null;
       v = v.map(Number).filter(x => Number.isFinite(x) && x >= 0 && x <= 25).map(Math.round).slice(0, 8);
       if (!v.length) return null;
@@ -3156,7 +3252,8 @@ function applyAction(act) {
     }
     const prev = clone(p), prevCov = S.coverage, prevTier = S.tierPick;
     spec.set(p, v);
-    return { note: `Updated ${spec.say(v)}. Your plan has been recalculated.`, undo: () => { S.p = prev; S.coverage = prevCov; S.tierPick = prevTier; }, values: [v], answered: true };
+    const marked = markAnswersChanged(FIELD_NODES[act.field] || []);
+    return { note: `Updated ${spec.say(v)}. Your plan has been recalculated.`, undo: () => { S.p = prev; S.coverage = prevCov; S.tierPick = prevTier; unmark(marked); }, values: [v], answered: true };
   }
   if (type === 'policy') {
     const map = { term10: { type: 'term', years: 10 }, term20: { type: 'term', years: 20 }, term30: { type: 'term', years: 30 }, whole: { type: 'whole' } };
@@ -3164,7 +3261,8 @@ function applyAction(act) {
     if (!(S.coverage > 0)) return { note: 'Once your coverage amount is set, I can switch the policy type.' };
     const prev = clone(p);
     p.policy = pol; if (pol.type !== 'whole') p.cvDeposit = null;
-    return { note: `Switched your policy to ${policyName(pol).toLowerCase()}.`, undo: () => { S.p = prev; }, after: () => showCard('policy'), answered: true };
+    const marked = markAnswersChanged(['policyType', 'cvDeposit']);
+    return { note: `Switched your policy to ${policyName(pol).toLowerCase()}.`, undo: () => { S.p = prev; unmark(marked); }, after: () => showCard('policy'), answered: true };
   }
   if (type === 'coverage') {
     const v = Number(act.value); if (!Number.isFinite(v) || v < 10000 || v > 5e7) return null;
@@ -3193,6 +3291,7 @@ function applyAction(act) {
   if (type === 'newPlan') return { note: 'Starting a fresh plan. This one stays saved in your list.', after: () => setTimeout(() => { flushSave(); startBlank(); }, 900) };
   return null;
 }
+function unmark(rows) { for (const r of rows) { r.classList.remove('stale'); const n = r.querySelector('.stale-note'); if (n) n.remove(); if (r._entry) r._entry.stale = false; } }
 function showCard(kind) {
   const el = stream.querySelector(`.card[data-kind="${kind}"]`); if (!el) return false;
   el.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' }); pulse(el); return true;
@@ -3231,6 +3330,14 @@ function localIntent(q) {
     return { reply: (id && (WHY[id] || (/^ph?[A-Z]/.test(id) ? WHY.healthGate : null) || (id.startsWith('p') ? 'Your partner’s side shows what your household would need if they weren’t here.' : null))) || 'Each answer adds a piece to your plan, and you can change any of them later.' };
   }
   if (/\b(start over|new plan|start (a )?(new|fresh)|from scratch)\b/.test(t)) return { action: { type: 'newPlan' } };
+  const KID = /\b(kids?|kiddos?|child\w*|chil?d?(ern|ren|ran)\w*|chlid\w*|sons?|daughters?|bab(y|ies)|little ones?)\b/;
+  const users = S.qa.filter(x => x.role === 'user'), prevUser = users.length > 1 ? users[users.length - 2].content.toLowerCase() : '';
+  const ageList = s => (s.match(/\b\d{1,2}\b/g) || []).map(Number).filter(x => x <= 25);
+  if (KID.test(t) && /\b(are|aged?|ages|is)\b|\(|\d+\s*(and|&|,)\s*\d+/.test(t) && ageList(t.split(KID).slice(1).join(' ')).length) return { action: { type: 'update', field: 'kids', value: ageList(t.split(KID).slice(1).join(' ')) } };
+  if (/^\s*[\d\s,and&]+\s*$/.test(t.replace(/years?|old|yrs?/g, '')) && KID.test(prevUser) && ageList(t).length) return { action: { type: 'update', field: 'kids', value: [...kidsOf(p).filter(() => !/\b(add|another|also|too)\b/.test(prevUser) ? false : true), ...ageList(t)] } };
+  if (/\b(add|include|cover|have|got)\b/.test(t) && KID.test(t) && !ageList(t).length) return { reply: 'Happy to. How old are they? For example, “3 and 7.”' };
+  if (/\b(divorced|separated|single now|no longer married|remove my (wife|husband|partner|spouse)|don'?t have a (wife|husband|partner|spouse))\b/.test(t)) return { action: { type: 'update', field: 'household', value: 'just_me' } };
+  if (/\b(add|include)\b[^.]*\b(wife|husband|partner|spouse)\b|\b(i'?m|we'?re|got) married\b|\bi have a (wife|husband|partner|spouse)\b/.test(t)) return { action: { type: 'update', field: 'household', value: 'partner' } };
   if (/\b(add|share|enter|personali[sz]e|use)\b[^.]*\bhealth\b|\bhealth (details|info)/.test(t) && !/\bwhat|why|how\b/.test(t)) return { action: { type: 'health' } };
   if (/\b(what if|what happens|suppose|scenario|simulate|stress test)\b/.test(t)) {
     const SC = [[/lose (my )?job|laid off|fired|unemploy/, 'joblost'], [/\b(sick|ill\b|illness|injur|cancer|disab|hospital|can't work)/, 'illness'], [/\b(baby|pregnan|another (kid|child))/, 'baby'], [/\b(market|stocks?|crash|investments? (drop|fall))/, 'market'], [/\binflation|prices (go|keep|rising|rise)/, 'inflation'], [/\b(parent|mom|dad|mother|father)\b/, 'carer'], [/\b(bill|unexpected expense|emergency)/, 'expense'], [/\b(bigger|new) (home|house)|\bmove\b|buy a (home|house)/, 'home'], [/\bpay off\b/, 'payoff'], [/\b(change|switch|new) jobs?\b/, 'jobs'], [/\bpartner (stops|quits)|stay.at.home/, 'partner'], [/\braise\b|\bpromot/, 'raise'], [/save more|more savings/, 'save']];
@@ -3446,7 +3553,7 @@ async function askQuestion(q) {
   const parts = [reply ? { html } : null, res && res.note ? { note: res.note } : null, note ? { note } : null];
   renderParts(body, parts);
   if (res && res.undo) {
-    const undo = h('button', { class: 'linkish small-link', type: 'button', onclick: () => { res.undo(); refresh(); undo.textContent = 'Undone'; undo.disabled = true; } }, 'Undo');
+    const undo = h('button', { class: 'linkish small-link', type: 'button', onclick: () => { res.undo(); refresh(); syncAfterChange(); undo.textContent = 'Undone'; undo.disabled = true; } }, 'Undo');
     body.append(undo);
   }
   S.log.push({ t: 'll', parts: logParts(parts) });
@@ -3458,6 +3565,10 @@ async function askQuestion(q) {
   // a typed answer to the waiting question moves the conversation on
   if (answerNode && S.active && S.active.node === answerNode) { S.active.choose(answerVal); return; }
   if (S.active && res && res.answered && S.active.node.known && S.active.node.known(P())) { S.active.skip(); return; }
+  if (res && (res.answered || res.undo)) {
+    if (S.active) { syncAfterChange(); if (!S.active) return; }
+    else { setTimeout(syncAfterChange, 400); }
+  }
   if (S.active && S.active.node.id === 'policyType' && res && action && action.type === 'policy') { S.active.skip(); return; }
   if (S.active && S.active.wEl && S.active.wEl.isConnected) { await wait(250); stream.append(S.active.qEl, S.active.wEl); if (!(res && res.after)) scrollDown(true); }
   else if (S.pending && S.pending.el && S.pending.el.isConnected) { await wait(250); stream.append(S.pending.el); scrollDown(true); }
@@ -3652,7 +3763,7 @@ function openPlan(id) {
     if (i === skip) return;
     try {
       if (e.t === 'll') sayNow(e.parts, e.askId);
-      else if (e.t === 'me') meBubble(e.text, e.nodeId ? NODE[e.nodeId] : null);
+      else if (e.t === 'me') { const row = meBubble(e.text, e.nodeId ? NODE[e.nodeId] : null); if (e.stale) markStale(row, 'Changed later'); }
       else if (e.t === 'stage') stageBreak(e.st);
       else if (e.t === 'card' && CARDS[e.kind]) appendCard(e.kind);
       else if (e.t === 'assume') appendAssumeChips(e.ids || []);

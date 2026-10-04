@@ -11,19 +11,19 @@
 </head>
 <body class="on-landing pre">
 <section class="landing" id="landing" aria-label="Welcome to LincolnLens">
+  <div class="landing-photo" aria-hidden="true"><img src="./family.png" alt=""></div>
   <div class="landing-inner">
     <div class="l-brand">
       <div class="name">LincolnLens</div>
       <div class="tag">Your life insurance, explained</div>
     </div>
     <div class="l-hero">
-      <h1>Know what <em>your family</em> would need.</h1>
+      <h1>Life’s unpredictable.<br>Your plan doesn’t have to be.</h1>
       <p class="lede">Answer a few simple questions. See the financial gaps life insurance could help cover.</p>
       <div class="l-actions">
         <button class="l-cta" id="buildPlan" type="button">Build my plan</button>
         <button class="linkish" id="continuePlan" type="button" hidden>Continue your last plan</button>
       </div>
-      <p class="l-fine">No insurance knowledge needed · No sensitive financial accounts · Every number explained</p>
     </div>
     <div class="l-cards">
       <div class="l-card">
@@ -66,11 +66,11 @@
       <div class="stream" id="stream" aria-live="polite"></div>
       <div class="composer">
         <div class="suggest" id="suggest" aria-label="Suggestions"></div>
-        <form id="askForm" autocomplete="off">
+        <div class="ask-box" id="askBox">
           <label class="sr" for="ask">Ask LincolnLens a question</label>
-          <input id="ask" placeholder="Ask anything, or tell me what changed" maxlength="400">
-          <button class="btn small" type="submit">Ask</button>
-        </form>
+          <input id="ask" placeholder="Ask anything, or tell me what changed" maxlength="400" enterkeyhint="send" autocomplete="off">
+          <button class="btn small" id="askBtn" type="button">Ask</button>
+        </div>
         <div class="hint">I can answer questions, update your plan or run a what-if. Educational estimate, not advice.</div>
       </div>
     </section>

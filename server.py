@@ -1,6 +1,7 @@
-"""Serve the LifeLens V2 page and pass reading and explanations to local Qwen.
+"""Serve LifeLens and pass reading and explanations to a model.
 
 The coverage math stays in the page. The model only reads words and explains.
+Which model answers is set in llm.config.json, not in the page.
 """
 
 from __future__ import annotations
@@ -17,8 +18,53 @@ from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
-LLM_URL = "http://127.0.0.1:8000/v1/chat/completions"
-MODEL = "Qwen/Qwen3.5-9B"
+CONFIG_FILE = ROOT / "llm.config.json"
+
+
+def load_config() -> dict:
+    """llm.config.json is the only switch. Edit backend to "local" or "modal"."""
+    defaults = {
+        "backend": "local",
+        "local": {
+            "url": "http://127.0.0.1:8000/v1/chat/completions",
+            "model": "Qwen/Qwen3.5-9B",
+            "key": "",
+        },
+        "modal": {
+            "url": "",
+            "model": "Qwen/Qwen3.5-9B",
+            "key": "",
+        },
+    }
+    if not CONFIG_FILE.is_file():
+        return defaults
+    try:
+        data = json.loads(CONFIG_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return defaults
+    if not isinstance(data, dict):
+        return defaults
+    for kind in ("local", "modal"):
+        block = data.get(kind)
+        if isinstance(block, dict):
+            defaults[kind].update({k: block.get(k, defaults[kind][k]) for k in ("url", "model", "key")})
+    if data.get("backend") in ("local", "modal"):
+        defaults["backend"] = data["backend"]
+    return defaults
+
+
+def active_spec() -> dict:
+    cfg = load_config()
+    kind = cfg["backend"]
+    block = cfg[kind]
+    return {
+        "id": kind,
+        "label": "Modal" if kind == "modal" else "Local",
+        "url": str(block.get("url") or "").strip(),
+        "model": str(block.get("model") or "Qwen/Qwen3.5-9B").strip(),
+        "key": str(block.get("key") or "").strip(),
+    }
+
 
 app = FastAPI(title="LifeLens V2")
 
@@ -44,6 +90,30 @@ def _extract_json(text: str) -> dict | list | None:
             return None
 
 
+def _models_url(chat_url: str) -> str:
+    suffix = "/chat/completions"
+    if chat_url.endswith(suffix):
+        return chat_url[: -len(suffix)] + "/models"
+    return chat_url
+
+
+def _probe(spec: dict) -> bool:
+    if not spec["url"]:
+        return False
+    headers = {"Authorization": "Bearer " + spec["key"]} if spec["key"] else {}
+    try:
+        response = httpx.get(_models_url(spec["url"]), headers=headers, timeout=4)
+        return response.status_code < 500
+    except Exception:
+        return False
+
+
+@app.get("/api/backends")
+def list_backends() -> dict:
+    spec = active_spec()
+    return {"active": spec["id"], "label": spec["label"], "model": spec["model"], "ok": _probe(spec)}
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(DIST / "index.html")
@@ -59,24 +129,40 @@ def asset(asset_path: str) -> FileResponse:
 
 @app.post("/api/complete")
 def complete(body: CompleteIn) -> dict:
+    spec = active_spec()
+    if not spec["url"]:
+        raise HTTPException(
+            status_code=400,
+            detail="The selected model has no endpoint. Set it in llm.config.json.",
+        )
     messages = body.messages or [{"role": "user", "content": body.prompt or ""}]
     if body.json:
         messages = [
             {"role": "system", "content": "Reply with one JSON object only. No markdown and no explanation."},
             *messages,
         ]
+    headers = {"Authorization": "Bearer " + spec["key"]} if spec["key"] else {}
     try:
         response = httpx.post(
-            LLM_URL,
-            json={"model": MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 1200},
-            timeout=90,
+            spec["url"],
+            headers=headers,
+            json={
+                "model": spec["model"],
+                "messages": messages,
+                "temperature": 0.3,
+                "max_tokens": 2048,
+                "top_p": 0.9,
+                "stream": False,
+                "reasoning_effort": "none",
+            },
+            timeout=120,
         )
         response.raise_for_status()
         text = response.json()["choices"][0]["message"]["content"].strip()
         text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    payload = {"ok": True, "text": text}
+        raise HTTPException(status_code=502, detail=f"{spec['label']}: {exc}") from exc
+    payload = {"ok": True, "text": text, "backend": spec["id"], "model": spec["model"], "label": spec["label"]}
     if body.json:
         payload["json"] = _extract_json(text) or {}
     return payload

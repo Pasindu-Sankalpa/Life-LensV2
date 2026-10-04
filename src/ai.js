@@ -1,9 +1,10 @@
 import { $, esc, fmt, fmtK, h, pct, plural, reduceMotion, roundTo, wait } from './dom.js';
 import { P, S, SOURCES } from './state.js';
-import { allowedFigures, cap, cashValueAt, compute, guard, hasKids, hasPartner, healthShared, householdText, partnerProfile, policyName, premium, rangeTxt, remainingSavings, riskClass, simulate, wealthProfile } from './engine.js';
-import { logParts, markEl, meBubble, optButton, refresh, renderParts, renderStages, say, scrollDown, stale, stream } from './ui.js';
-import { ALL_EVENTS, clone, eventLabel, kidsHousehold, listJoin, personalizeHealth, reactionText, run, tradeoffs } from './flow.js';
+import { allowedFigures, cap, cashValueAt, compute, guard, hasKids, hasPartner, healthShared, householdText, kidsOf, partnerProfile, policyName, premium, rangeTxt, remainingSavings, riskClass, simulate, termEndCheck, termPlan, wealthProfile } from './engine.js';
+import { appendCard, editNode, live, logParts, markEl, markStale, meBubble, optButton, refresh, renderParts, renderStages, say, scrollDown, stale, stream, syncAfterChange, toast } from './ui.js';
+import { ALL_EVENTS, NODE, clone, eventLabel, kidsHousehold, listJoin, personalizeHealth, reactionText, run, summaryText, tradeoffs } from './flow.js';
 import { flushSave, hideHero, scheduleSave, startBlank } from './hero.js';
+import { listBackends } from './client.js';
 
 /* ======================================================================
    AI layer: Claude reads and explains; the engine calculates
@@ -121,6 +122,15 @@ async function initAI() {
   S.ai.ready = true;
   const photo = document.getElementById('heroPhoto'); if (photo && S.ai.images) photo.hidden = false;
   renderDrawer(true);
+  refreshBackends().catch(() => {});
+}
+async function refreshBackends() {
+  const info = await listBackends();
+  const state = info.ok ? info.model : 'offline, will retry on the next question';
+  S.ai.name = `${info.label || 'Local'} (${state})`;
+  S.ai.tag = info.label || 'Local';
+  renderDrawer(true);
+  return info;
 }
 
 /* ---------- local reader (fallback when Claude isn't available) ---------- */
@@ -218,6 +228,25 @@ function intakeChips(f) {
   if (f.businessOwner) chips.push(['businessOwner', 'Owns a business']);
   return chips;
 }
+function profileFacts(p) {
+  return { age: p.age, household: p.household, kids: kidsOf(p), income: p.income, housing: p.housing, mortgage: p.mortgage, debts: p.debts,
+    savings: p.savings, coverage: p.coverage, coverageSource: p.coverageSource, partnerIncome: p.partner.income, investments: p.assets, businessOwner: p.businessOwner };
+}
+function clearFact(k) {
+  const p = P();
+  if (k === 'age') p.age = null;
+  else if (k === 'household') { p.household = null; p.kids = []; }
+  else if (k === 'income') p.income = null;
+  else if (k === 'housing') { p.housing = null; p.mortgage = null; p.mortgagePlan = null; }
+  else if (k === 'mortgage') p.mortgage = null;
+  else if (k === 'debts') p.debts = null;
+  else if (k === 'savings') { p.savings = null; p.savingsUse = null; }
+  else if (k === 'coverage') { p.coverage = null; p.coverageSource = null; }
+  else if (k === 'partnerIncome') p.partner.income = null;
+  else if (k === 'investments') { if (p.savings === p.assets) { p.savings = null; p.savingsUse = null; } p.assets = null; }
+  else if (k === 'businessOwner') p.businessOwner = null;
+  renderStages();
+}
 function applyIntake(f) {
   const p = P();
   if (f.age) p.age = f.age;
@@ -250,15 +279,22 @@ async function startFromText(text) {
   if (stale(tok)) return;
   const chips = intakeChips(found);
   if (!chips.length) { await say('I couldn’t pick out the details from that, so let’s go one question at a time.'); return run(); }
-  await say(['Here’s what I caught.', { sub: 'Remove anything I got wrong. I’ll ask about the rest.' }]);
-  const keep = new Set(chips.map(c => c[0]));
+  // apply what was read right away, so the card, the plan and anything said in chat stay the same thing
+  applyIntake(found);
+  await say(['Here’s what I caught.', { sub: 'Remove anything I got wrong, or tell me what to change. I’ll ask about the rest.' }]);
   let typedPick = false;
   const box = h('div', { class: 'widget' });
-  const chipsEl = h('div', { class: 'chips' }, chips.map(([k, label]) => { const c = h('span', { class: 'chip' }, label, h('button', { type: 'button', 'aria-label': `Remove ${label}`, onclick: () => { keep.delete(k); c.remove(); } }, '×')); return c; }));
+  const chipsEl = h('div', { class: 'chips' });
+  const drawChips = () => {
+    chipsEl.innerHTML = '';
+    const chips = intakeChips(profileFacts(P()));
+    if (!chips.length) { chipsEl.append(h('span', { class: 'note', style: { margin: 0 } }, 'Nothing yet. I’ll ask as we go.')); return; }
+    for (const [k, label] of chips) chipsEl.append(h('span', { class: 'chip' }, label, h('button', { type: 'button', 'aria-label': `Remove ${label}`, onclick: () => { clearFact(k); refresh(); } }, '×')));
+  };
   const choice = await new Promise(resolve => {
     S.pending = { el: box, onText: t => {
       const s = t.toLowerCase();
-      const pick = /walk|through|step|full|slow/.test(s) ? 'full' : /quick|fast|yes|right|correct|good|looks|ok|okay|yep|sure/.test(s) ? 'quick' : null;
+      const pick = /walk|through|step|full|slow/.test(s) ? 'full' : /^\s*(quick|fast|yes|right|correct|good|looks (right|good)|ok|okay|yep|sure|that'?s right)\b/.test(s) ? 'quick' : null;
       if (!pick || looksLikeQuestion(t)) return false;
       typedPick = true; resolve(pick); return true;
     } };
@@ -266,14 +302,14 @@ async function startFromText(text) {
       h('div', { class: 'actions' },
         h('button', { class: 'btn', type: 'button', onclick: () => resolve('quick') }, 'Looks right, keep it quick'),
         h('button', { class: 'btn secondary', type: 'button', onclick: () => resolve('full') }, 'Looks right, walk me through it')));
-    stream.append(box); scrollDown(true);
+    stream.append(box);
+    live(box, drawChips);
+    scrollDown(true);
   });
   S.pending = null;
   if (stale(tok)) return;
   box.remove();
-  const f = {}; for (const k of keep) { if (k === 'household') { f.household = found.household; f.kids = found.kids; } else if (k === 'housing') f.housing = found.housing; else if (k === 'coverage') { f.coverage = found.coverage; f.coverageSource = found.coverageSource; } else f[k] = found[k]; }
   if (!typedPick) meBubble(choice === 'quick' ? 'Looks right, keep it quick' : 'Looks right, walk me through it', null);
-  applyIntake(f);
   S.quick = choice === 'quick';
   await say(S.quick ? 'Great. I’ll ask only what I still need and fill in common assumptions you can change later.' : 'Great. That saves us a few questions.');
   run();
@@ -406,7 +442,7 @@ Reply with ONLY one JSON object and nothing else: {"reply": "...", "action": nul
 - Tone: warm and steady, never alarming. Say "if you weren't here" rather than "death" or "die".
 
 "action": when they tell you a fact about themselves, ask to change something, or ask to see or try something, return ONE of these. Otherwise null.
-{"type":"update","field":F,"value":V}  F is one of: age, income, mortgage, debts, savings, savingsUse, existingCoverage, cushion, educationPerKid, childcareAnnual, incomeYears, kids, partnerIncome, partnerAge. V is dollars or years as a number ("85k" means 85000), "grown" for incomeYears, or an array of ages for kids. Only use values they actually stated.
+{"type":"update","field":F,"value":V}  F is one of: household ("just_me", "partner", "children" or "partner_children"), age, income, mortgage, debts, savings, savingsUse, existingCoverage, cushion, educationPerKid, childcareAnnual, incomeYears, kids, partnerIncome, partnerAge. V is dollars or years as a number ("85k" means 85000), "grown" for incomeYears, or an array of ages for kids. Only use values they actually stated.
 {"type":"policy","value":"term10"|"term20"|"term30"|"whole"}
 {"type":"coverage","value":number}   a coverage amount they want to try
 {"type":"show","value":"plan"|"timeline"|"amounts"|"policy"|"price"|"options"|"family"|"scenarios"|"numbers"}
@@ -435,9 +471,22 @@ const UPDATES = {
   childcareAnnual: { min: 0, max: 100000, money: true, set: (p, v) => { p.childcareAnnual = v; p.kidGoals = [...new Set([...(p.kidGoals || []).filter(x => x !== 'none'), 'childcare'])]; }, say: v => `childcare to ${fmtK(v)} a year` },
   incomeYears: { min: 1, max: 40, set: (p, v) => { p.incomeYearsChoice = v; p.incomeYears = v === 'grown' ? null : v; }, say: v => v === 'grown' ? 'income support to last until your kids are grown' : `income support to ${v} years` },
   kids: { set: (p, v) => { p.kids = v; if (v.length && !kidsHousehold(p)) p.household = hasPartner(p) ? 'partner_children' : 'children'; }, say: v => `your children’s ages to ${listJoin(v.map(String))}` },
+  household: { set: (p, v) => {
+      const kids = kidsOf(p).length > 0;
+      if (v === 'partner' && kids) v = 'partner_children';
+      if (v === 'just_me' && kids) v = 'children';
+      p.household = v; if (!['children', 'partner_children'].includes(v)) p.kids = [];
+      renderStages();
+    }, say: v => ({ just_me: 'your household to just you', partner: 'your household to include your partner', children: 'your household to include your children', partner_children: 'your household to include your partner and children', other: 'your household to someone else who relies on you' })[v] || 'your household' },
   partnerIncome: { min: 0, max: 5e6, money: true, set: (p, v) => { p.partner.income = v; }, say: v => `your partner’s income to ${fmtK(v)}` },
   partnerAge: { min: 18, max: 90, set: (p, v) => { p.partner.age = v; }, say: v => `your partner’s age to ${v}` }
 };
+const FIELD_NODES = { age: ['age'], income: ['income'], mortgage: ['mortgage'], debts: ['debts'], savings: ['savings'], savingsUse: ['savingsUse'], existingCoverage: ['coverageHave', 'coverageAmt'], cushion: ['cushion'], educationPerKid: ['education'], childcareAnnual: ['childcare'], incomeYears: ['incomeYears'], kids: ['kids'], household: ['household', 'kids'], partnerIncome: ['pIncome'], partnerAge: ['pAge'] };
+function markAnswersChanged(ids) {
+  const rows = [];
+  for (const id of ids) stream.querySelectorAll(`.msg.me[data-node="${id}"]`).forEach(r => { if (!r.classList.contains('stale')) { markStale(r, 'Changed in chat'); rows.push(r); } });
+  return rows;
+}
 const SHOW_CARDS = { timeline: 'timeline', amounts: 'sandbox', policy: 'policy', price: 'risk', options: 'wealth', family: 'family', scenarios: 'explore' };
 const SHOW_NAMES = { timeline: 'your year-by-year timeline', amounts: 'the coverage slider', policy: 'your policy', price: 'your price class', options: 'the premium options', family: 'your household’s two plans', scenarios: 'the scenarios', plan: 'your plan', numbers: '“Behind the numbers”' };
 /* validate and carry out one action; returns what to tell the person and what to do after the reply shows */
@@ -447,7 +496,9 @@ function applyAction(act) {
   if (type === 'update') {
     const spec = UPDATES[act.field]; if (!spec) return null;
     let v = act.value;
-    if (act.field === 'kids') {
+    if (act.field === 'household') {
+      if (!['just_me', 'partner', 'children', 'partner_children', 'other'].includes(v)) return null;
+    } else if (act.field === 'kids') {
       if (!Array.isArray(v)) return null;
       v = v.map(Number).filter(x => Number.isFinite(x) && x >= 0 && x <= 25).map(Math.round).slice(0, 8);
       if (!v.length) return null;
@@ -460,7 +511,8 @@ function applyAction(act) {
     }
     const prev = clone(p), prevCov = S.coverage, prevTier = S.tierPick;
     spec.set(p, v);
-    return { note: `Updated ${spec.say(v)}. Your plan has been recalculated.`, undo: () => { S.p = prev; S.coverage = prevCov; S.tierPick = prevTier; }, values: [v], answered: true };
+    const marked = markAnswersChanged(FIELD_NODES[act.field] || []);
+    return { note: `Updated ${spec.say(v)}. Your plan has been recalculated.`, undo: () => { S.p = prev; S.coverage = prevCov; S.tierPick = prevTier; unmark(marked); }, values: [v], answered: true };
   }
   if (type === 'policy') {
     const map = { term10: { type: 'term', years: 10 }, term20: { type: 'term', years: 20 }, term30: { type: 'term', years: 30 }, whole: { type: 'whole' } };
@@ -468,7 +520,8 @@ function applyAction(act) {
     if (!(S.coverage > 0)) return { note: 'Once your coverage amount is set, I can switch the policy type.' };
     const prev = clone(p);
     p.policy = pol; if (pol.type !== 'whole') p.cvDeposit = null;
-    return { note: `Switched your policy to ${policyName(pol).toLowerCase()}.`, undo: () => { S.p = prev; }, after: () => showCard('policy'), answered: true };
+    const marked = markAnswersChanged(['policyType', 'cvDeposit']);
+    return { note: `Switched your policy to ${policyName(pol).toLowerCase()}.`, undo: () => { S.p = prev; unmark(marked); }, after: () => showCard('policy'), answered: true };
   }
   if (type === 'coverage') {
     const v = Number(act.value); if (!Number.isFinite(v) || v < 10000 || v > 5e7) return null;
@@ -497,6 +550,7 @@ function applyAction(act) {
   if (type === 'newPlan') return { note: 'Starting a fresh plan. This one stays saved in your list.', after: () => setTimeout(() => { flushSave(); startBlank(); }, 900) };
   return null;
 }
+function unmark(rows) { for (const r of rows) { r.classList.remove('stale'); const n = r.querySelector('.stale-note'); if (n) n.remove(); if (r._entry) r._entry.stale = false; } }
 function showCard(kind) {
   const el = stream.querySelector(`.card[data-kind="${kind}"]`); if (!el) return false;
   el.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' }); pulse(el); return true;
@@ -535,6 +589,14 @@ function localIntent(q) {
     return { reply: (id && (WHY[id] || (/^ph?[A-Z]/.test(id) ? WHY.healthGate : null) || (id.startsWith('p') ? 'Your partner’s side shows what your household would need if they weren’t here.' : null))) || 'Each answer adds a piece to your plan, and you can change any of them later.' };
   }
   if (/\b(start over|new plan|start (a )?(new|fresh)|from scratch)\b/.test(t)) return { action: { type: 'newPlan' } };
+  const KID = /\b(kids?|kiddos?|child\w*|chil?d?(ern|ren|ran)\w*|chlid\w*|sons?|daughters?|bab(y|ies)|little ones?)\b/;
+  const users = S.qa.filter(x => x.role === 'user'), prevUser = users.length > 1 ? users[users.length - 2].content.toLowerCase() : '';
+  const ageList = s => (s.match(/\b\d{1,2}\b/g) || []).map(Number).filter(x => x <= 25);
+  if (KID.test(t) && /\b(are|aged?|ages|is)\b|\(|\d+\s*(and|&|,)\s*\d+/.test(t) && ageList(t.split(KID).slice(1).join(' ')).length) return { action: { type: 'update', field: 'kids', value: ageList(t.split(KID).slice(1).join(' ')) } };
+  if (/^\s*[\d\s,and&]+\s*$/.test(t.replace(/years?|old|yrs?/g, '')) && KID.test(prevUser) && ageList(t).length) return { action: { type: 'update', field: 'kids', value: [...kidsOf(p).filter(() => !/\b(add|another|also|too)\b/.test(prevUser) ? false : true), ...ageList(t)] } };
+  if (/\b(add|include|cover|have|got)\b/.test(t) && KID.test(t) && !ageList(t).length) return { reply: 'Happy to. How old are they? For example, “3 and 7.”' };
+  if (/\b(divorced|separated|single now|no longer married|remove my (wife|husband|partner|spouse)|don'?t have a (wife|husband|partner|spouse))\b/.test(t)) return { action: { type: 'update', field: 'household', value: 'just_me' } };
+  if (/\b(add|include)\b[^.]*\b(wife|husband|partner|spouse)\b|\b(i'?m|we'?re|got) married\b|\bi have a (wife|husband|partner|spouse)\b/.test(t)) return { action: { type: 'update', field: 'household', value: 'partner' } };
   if (/\b(add|share|enter|personali[sz]e|use)\b[^.]*\bhealth\b|\bhealth (details|info)/.test(t) && !/\bwhat|why|how\b/.test(t)) return { action: { type: 'health' } };
   if (/\b(what if|what happens|suppose|scenario|simulate|stress test)\b/.test(t)) {
     const SC = [[/lose (my )?job|laid off|fired|unemploy/, 'joblost'], [/\b(sick|ill\b|illness|injur|cancer|disab|hospital|can't work)/, 'illness'], [/\b(baby|pregnan|another (kid|child))/, 'baby'], [/\b(market|stocks?|crash|investments? (drop|fall))/, 'market'], [/\binflation|prices (go|keep|rising|rise)/, 'inflation'], [/\b(parent|mom|dad|mother|father)\b/, 'carer'], [/\b(bill|unexpected expense|emergency)/, 'expense'], [/\b(bigger|new) (home|house)|\bmove\b|buy a (home|house)/, 'home'], [/\bpay off\b/, 'payoff'], [/\b(change|switch|new) jobs?\b/, 'jobs'], [/\bpartner (stops|quits)|stay.at.home/, 'partner'], [/\braise\b|\bpromot/, 'raise'], [/save more|more savings/, 'save']];
@@ -630,12 +692,6 @@ function localChoose(node, text) {
     const m = t.match(new RegExp(NUMR)); if (!m) return null;
     return o.kind === 'number' ? Number(m[1]) : typedMoney(m);
   }
-  const norm = s => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  const said = norm(t);
-  if (o.options && said) {
-    const exact = o.options.find(x => norm(x.label) === said);
-    if (exact) return o.kind === 'multi' ? [exact.value] : exact.value;
-  }
   const words = new Set(toks(t));
   const has = w => words.has(w);
   if (o.kind === 'multi') {
@@ -664,23 +720,371 @@ function typedMoney(m) {
 const CRISIS = /\b(kill(ing)? (myself|me)|suicid|end (my life|it all)|take my (own )?life|want to die|don'?t want to (live|be here)|self.?harm|hurt(ing)? myself|better off without me)/i;
 const CRISIS_REPLY = 'I’m really sorry you’re dealing with this. You don’t have to go through it alone. In the US, you can call or text 988 any time to reach the Suicide & Crisis Lifeline. If you’re in immediate danger, please call 911. I’m here if you want to keep talking, and your plan will be here whenever you want to come back to it.';
 
-function renderSuggest() {
-  const el = document.getElementById('suggest'); if (!el) return;
+function guardHtml(text, extra = []) {
+  const g = guard(text, [...allowedFigures(), ...extra]);
+  let html = '';
+  if (g.ok) html = esc(text);
+  else { let last = 0; for (const ch of g.checks) { html += esc(text.slice(last, ch.index)); html += ch.ok ? esc(ch.raw) : '<span class="redact" title="Removed: this figure didn’t match your plan">a figure I removed</span>'; last = ch.index + ch.raw.length; } html += esc(text.slice(last)); }
+  return { html, g };
+}
+function aiTag(via, g) {
+  const n = g ? g.checks.length : 0;
+  return h('div', { class: 'ai-tag' + (via === 'claude' ? ' on' : '') }, via === 'claude'
+    ? `Written by ${S.ai.tag === 'Local AI' ? 'your local AI' : 'AI'}${n ? `, ${n} ${plural(n, 'figure', 'figures')} checked against your plan` : ''}`
+    : 'Built-in explanation (no AI model connected)');
+}
+const stripThink = s => String(s || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+async function aiWrite(task, prompt, fallback) {
+  let text = null, via = 'local';
+  if (S.ai.sample) {
+    try { const r = await S.ai.sample(prompt, { modelTier: 'quick', cache: false }); text = stripThink(r.text); via = 'claude'; }
+    catch (e) { logAI({ task, via: 'local', detail: `${aiName()} couldn’t answer (${e && e.code || 'error'}), so a built-in version was used.` }); }
+  }
+  if (!text) text = fallback();
+  const { html, g } = guardHtml(text);
+  logAI({ task, via, pass: g.ok, detail: `${g.checks.length} figure(s) checked against the plan.` });
+  return { text, html, via, g };
+}
+function thinkingMsg() {
+  const body = h('div', { class: 'body' }, h('div', { class: 'typing', role: 'status', 'aria-label': 'LincolnLens is writing' }, h('i'), h('i'), h('i')));
+  const wrap = h('div', { class: 'msg ll' }, markEl(), body);
+  stream.append(wrap); scrollDown(true);
+  return { wrap, body };
+}
+function planFactsText() {
+  const p = P(), c = compute(p), L = [];
+  const pri = (p.priorities || []).filter(x => x !== 'unsure').map(x => ({ home: 'your home', income: 'your income', kids: 'your children’s future', debts: 'against leftover debts', time: 'time for your family to adjust' })[x]);
+  L.push(`Household: ${householdText(p) || 'not given'}${p.age ? `, age ${p.age}` : ''}${p.income ? `, income ${fmt(p.income)} a year` : ''}.`);
+  if (pri.length) L.push(`What matters most to them: ${listJoin(pri)}.`);
+  for (const it of c.items) L.push(`Need: ${it.label} = ${fmt(it.amount)}.`);
+  for (const r of c.res) L.push(`Already has: ${r.label} = ${fmt(r.amount)}${r.counted ? '' : ' (not counted)'}.`);
+  L.push(`Total need ${fmt(c.need)}; already have ${fmt(c.have)}; still to cover ${fmt(c.gap)}; round target ${fmt(c.tiers.balanced)}.`);
+  if (S.coverage) L.push(`Coverage being explored: ${fmt(S.coverage)}.`);
+  if (p.policy && S.coverage) L.push(`Policy: ${policyName(p.policy)}.`);
+  if (p.coverageSource === 'work') L.push('Some coverage is through work.');
+  return L.join('\n');
+}
+function explainFallback() {
+  const p = P(), c = compute(p);
+  const items = [...c.items].sort((a, b) => b.amount - a.amount);
+  const S1 = 'Your plan is built from what your family would need if you weren’t here.';
+  const S2 = items[0] ? `The biggest piece is ${items[0].label.toLowerCase()}, about ${fmtK(items[0].amount)}${items[1] ? `, followed by ${items[1].label.toLowerCase()} at ${fmtK(items[1].amount)}` : ''}.` : '';
+  const S3 = c.have ? `What you already have, ${fmtK(c.have)}, counts toward it, leaving about ${fmtK(c.gap)} to cover.` : `Altogether that’s ${fmtK(c.need)}.`;
+  const S4 = c.tiers.balanced ? `A round target of ${fmtK(c.tiers.balanced)} would cover everything you listed.` : 'What you already have covers everything you described.';
+  return [S1, S2, S3, S4].filter(Boolean).join(' ');
+}
+async function explainPlan(fromChat) {
+  if (!fromChat) meBubble('Explain my plan', null);
+  const c = compute(P());
+  if (!c.items.length) { await say('Once I know a little more about your situation, I can walk you through your plan.'); renderSuggest(); return; }
+  const { body } = thinkingMsg();
+  const prompt = `You are LincolnLens, a warm guide in a life insurance planning app. Explain this person's plan to them in 4 to 6 short sentences of plain text (no lists, no markdown).
+Start from what they said matters most. Explain the biggest pieces, say that what they already have counts toward it, and end with the coverage target.
+Use only dollar figures that appear below, written exactly as given. Never calculate new amounts. Say "if you weren't here" rather than "death" or "die".
+
+THEIR PLAN
+${planFactsText()}`;
+  const out = await aiWrite('Explain my plan', prompt, explainFallback);
+  body.innerHTML = '';
+  renderParts(body, [{ html: out.html }]); body.append(aiTag(out.via, out.g));
+  S.log.push({ t: 'll', parts: [{ html: out.html }] });
+  S.qa.push({ role: 'assistant', content: out.text });
+  scheduleSave(); scrollDown(true); renderSuggest();
+}
+
+function insightCandidates(p) {
+  const c = compute(p), C = S.coverage || c.tiers.balanced, out = [];
+  const add = (id, fact, text, label, run) => out.push({ id, fact, text, label, run });
+  if (p.policy && p.policy.type === 'term' && C) {
+    const chk = termEndCheck(p, p.policy.years);
+    if (chk.short) add('termEnd', `Their ${p.policy.years}-year term ends while the family would still need about ${fmtK(chk.gEnd)}.`, `Your ${p.policy.years}-year term ends while your family would still need about ${fmtK(chk.gEnd)}. A longer term would close that gap.`, 'Try a 30-year term', () => { applyAction({ type: 'policy', value: 'term30' }); refresh(); syncAfterChange(); toast('Switched to a 30-year term.'); });
+  }
+  const work = c.res.find(r => r.key === 'coverage' && r.work && r.counted);
+  if (work) add('work', `${fmtK(work.amount)} of their coverage is through work.`, `${fmtK(work.amount)} of your coverage comes through work and would likely end if you changed jobs.`, 'See my plan without it', () => { S.A.countWork = false; refresh(); toast('Showing your plan without work coverage. Switch it back in the plan panel.'); });
+  if (p.savings && p.savingsUse != null && p.savingsUse >= p.savings) add('allSavings', `They are counting all ${fmtK(p.savings)} of savings toward the plan.`, `You’re counting all ${fmtK(p.savings)} of your savings toward the plan, which leaves no emergency fund.`, 'Change how much to use', () => editNode(NODE.savingsUse, null));
+  if (hasPartner(p) && !p.partner.cover) add('partner', 'Their partner has no coverage in this plan.', 'Your partner isn’t covered in this plan yet, and the care and income they provide would be costly to replace.', 'Why cover my partner?', () => askQuestion('Why does my partner need coverage too?'));
+  if (!healthShared(p.health) && C) add('health', 'No health details were shared, so the price range is wide.', 'Your price estimate is wide because it assumes average health. A few health answers would narrow it.', 'Add health details', () => personalizeHealth('you'));
+  if (C) { const tp = termPlan(p, C); if (tp.ladder && (!p.policy || p.policy.type === 'term')) add('ladder', 'A term ladder could cost less as needs shrink.', 'Because your needs shrink over time, a ladder of two term policies could cost a little less than one.', 'Compare the ladder', () => showCard('tvw')); }
+  if (wealthProfile(p).tier) add('wealth', 'Permanent coverage could help with what they pass on.', 'With what you’ve built, permanent coverage could also help pass on wealth or protect a business.', 'See the options', () => showCard('wealth'));
+  return out;
+}
+async function renderInsights() {
+  await say('I looked over your plan. A few things stood out.');
+  appendCard('insights');
+}
+function buildInsights() {
+  const card = h('div', { class: 'card insights-card' });
+  const st = { sig: null, items: null, via: null, g: null, busy: false };
+  const sigOf = p => insightCandidates(p).map(x => x.id + ':' + x.text).join('|');
+  async function generate() {
+    st.busy = true; draw();
+    const cands = insightCandidates(P());
+    let picked = [], via = 'local';
+    if (S.ai.sample && cands.length > 3) {
+      const prompt = `You are LincolnLens. From the observations below, choose the 3 that matter most and rewrite each as one short plain sentence spoken to them ("you"). Use only dollar figures that appear in the observations. Reply with ONLY JSON: {"insights":[{"id":"...","text":"..."}]}
+
+OBSERVATIONS
+${cands.map(x => `- ${x.id}: ${x.fact}`).join('\n')}`;
+      try {
+        const out = await S.ai.sample.json(prompt, { modelTier: 'quick', cache: false });
+        const arr = Array.isArray(out && out.insights) ? out.insights : [];
+        const seen = new Set();
+        picked = arr.map(x => ({ c: cands.find(k => k.id === String(x && x.id)), text: stripThink(x && x.text) })).filter(x => x.c && x.text && !seen.has(x.c.id) && seen.add(x.c.id)).slice(0, 3);
+        if (picked.length) via = 'claude';
+      } catch (e) { logAI({ task: 'Three things I noticed', via: 'local', detail: `${aiName()} couldn’t answer (${e && e.code || 'error'}), so built-in insights were used.` }); }
+    }
+    for (const k of cands) { if (picked.length >= 3) break; if (!picked.some(x => x.c.id === k.id)) picked.push({ c: k, text: k.text }); }
+    const allChecks = [];
+    st.items = picked.map(x => { const r = guardHtml(x.text); allChecks.push(...r.g.checks); return { ...x, html: r.html }; });
+    st.via = via; st.g = { ok: allChecks.every(ch => ch.ok), checks: allChecks };
+    logAI({ task: 'Three things I noticed', via, pass: st.g.ok, detail: `Chose ${st.items.map(x => x.c.id).join(', ')}.` });
+    st.sig = sigOf(P()); st.busy = false; draw(); scheduleSave();
+  }
+  function draw() {
+    card.innerHTML = '';
+    card.append(h('h3', null, 'Three things I noticed'), h('p', { class: 'lede' }, 'Based on your plan. Each comes with a quick way to act on it.'));
+    if (st.busy) { card.append(h('div', { class: 'typing', role: 'status', 'aria-label': 'Looking over your plan' }, h('i'), h('i'), h('i'))); return; }
+    if (!st.items || !st.items.length) { card.append(h('p', { class: 'helps' }, 'Nothing stands out right now. Your plan covers what you described.')); return; }
+    const ol = h('ol', { class: 'insights' });
+    for (const it of st.items) ol.append(h('li', null, h('p', { html: it.html }), h('button', { class: 'btn small secondary', type: 'button', onclick: () => it.c.run() }, it.c.label)));
+    card.append(ol, aiTag(st.via, st.g));
+    if (st.sig && st.sig !== sigOf(P())) card.append(h('div', { class: 'actions' }, h('span', { class: 'note', style: { margin: 0 } }, 'Your plan changed since I looked.'), h('button', { class: 'btn small quiet', type: 'button', onclick: generate }, 'Look again')));
+  }
+  card._init = () => { generate(); live(card, () => { if (!st.busy) draw(); }); };
+  return card;
+}
+
+const ASK_ABOUT = {
+  sandbox: 'How much coverage should I pick?', timeline: 'What does my timeline mean for my family?', tvw: 'Which is better for me, term or whole life?',
+  policy: 'Is this the right policy for me?', risk: 'How could I improve my price class?', wealth: 'Which of these options might fit me?',
+  family: 'Why does my partner need coverage too?', partnerPolicy: 'How should we split coverage between us?', explore: 'Which of these scenarios matters most for us?', insights: 'What should I look at first?'
+};
+function addAskAbout(card, kind) {
+  if (kind === 'reveal') {
+    const row = h('div', { class: 'ask-about' }, h('button', { class: 'btn small', type: 'button', onclick: () => explainPlan(false) }, 'Explain my plan'), h('span', { class: 'note', style: { margin: 0 } }, 'A personal walkthrough, written for this plan'));
+    card.after(row); live(row, () => { row.hidden = card.hidden; }); return;
+  }
+  const q = ASK_ABOUT[kind]; if (!q) return;
+  const row = h('div', { class: 'ask-about' }, h('button', { class: 'linkish', type: 'button', onclick: () => askQuestion(q) }, `Ask about this: “${q}”`));
+  card.after(row); live(row, () => { row.hidden = card.hidden; });
+}
+
+function briefFallback() {
+  const p = P(), c = compute(p), C = S.coverage || c.tiers.balanced;
+  const L = [];
+  L.push(`Client: ${householdText(p) || 'household not given'}${p.age ? `, age ${p.age}` : ''}${p.income ? `, income about ${fmtK(p.income)}` : ''}.`);
+  L.push(`Needs analysis: about ${fmtK(c.need)} in total needs, ${fmtK(c.have)} already in place, about ${fmtK(c.gap)} still to cover.`);
+  if (C) L.push(`Exploring ${fmtK(C)}${p.policy ? ` with ${policyName(p.policy).toLowerCase()}` : ''}.`);
+  L.push('Suggested next steps: confirm the details, check health class with a quick application, and review beneficiary designations.');
+  return L.join(' ');
+}
+async function writeBrief(target, btn) {
+  btn.disabled = true; btn.textContent = 'Writing…';
+  const qs = S.qa.filter(x => x.role === 'user').map(x => x.content).slice(-6);
+  const prompt = `You are LincolnLens, preparing a short brief for a licensed life insurance professional. Write 5 to 7 plain sentences (no lists, no markdown): who the client is, what matters to them, the needs analysis, the coverage they explored, questions they raised, and two next steps. Use only dollar figures that appear below, written exactly as given.
+
+PLAN SUMMARY
+${summaryText()}
+
+QUESTIONS THEY ASKED
+${qs.length ? qs.map(q => '- ' + q).join('\n') : '- none'}`;
+  const out = await aiWrite('Advisor brief', prompt, briefFallback);
+  target.innerHTML = '';
+  target.append(h('h4', null, 'Advisor brief'), h('p', { html: out.html }), aiTag(out.via, out.g));
+  target.dataset.text = out.text;
+  btn.textContent = 'Rewrite the brief'; btn.disabled = false;
+}
+
+/* Suggestions above the composer. Written for this moment, never a repeat of something already asked. */
+const QUESTION_PROMPTS = {
+  household: ['What counts as depending on me?', 'Does a stay-at-home partner count?', 'What if it is just me for now?'],
+  kids: ['Why do their ages matter?', 'What if one of them is almost grown?', 'What about a baby on the way?'],
+  age: ['Why does my age change the price?', 'Does age change how much I need?'],
+  income: ['Should I use take-home or gross pay?', 'What if my income changes a lot?'],
+  priorities: ['What if I am not sure what matters most?', 'Can I change these later?'],
+  housing: ['What if I rent but want to buy soon?', 'Does owning outright change the plan?'],
+  mortgagePlan: ['What if we only pay off part of it?', 'Can income support cover the payment instead?'],
+  mortgage: ['Should I include the full balance?', 'What if I am not sure of the exact amount?'],
+  incomeYears: ['How do people usually choose this?', 'What does until my kids are grown mean?'],
+  debts: ['Do student loans count here?', 'What if the debts are only in my name?'],
+  kidGoals: ['What is the difference between school and childcare?', 'Can I add this later?'],
+  education: ['Is this for college only?', 'What if each child needs a different amount?'],
+  childcare: ['Why does this stop at age 13?', 'What if a grandparent helps for free?'],
+  cushion: ['What does the cushion actually cover?', 'Is this enough for the first months?'],
+  savings: ['Should I include my retirement accounts?', 'What counts as money my family could use?'],
+  savingsUse: ['Why keep some as an emergency fund?', 'What happens if I use all of it?'],
+  coverageHave: ['How is work coverage different from my own?', 'What if I am not sure what I have?'],
+  coverageAmt: ['Is this the death benefit or what I pay?', 'Should I count accidental coverage?'],
+  feel: ['How much coverage should I pick?', 'What is the difference between these three?'],
+  healthGate: ['Does this change how much my family needs?', 'What happens if I skip this?'],
+  hNic: ['Why does nicotine change the price so much?', 'What counts as nicotine here?'],
+  hHW: ['Why do insurers ask for height and weight?', 'What if I would rather not say?'],
+  hBP: ['Does controlled blood pressure still raise the price?', 'What if I am not sure?'],
+  hCond: ['Will these answers be saved anywhere?', 'What if it was a long time ago?'],
+  hFam: ['Why does family history matter here?', 'What if I am not sure?'],
+  hLife: ['Do hobbies always raise the price?', 'What counts as a major driving violation?'],
+  lifelong: ['When is whole life actually worth it?', 'What does needing support for life mean?'],
+  policyType: ['Which is better for me, term or whole life?', 'Can I switch from term later?'],
+  cvDeposit: ['What does a cash value deposit do?', 'Is it better to keep that money in savings?'],
+  pIntro: ['Why does my partner need coverage too?', 'What if they do not earn an income?'],
+  pIncome: ['What if they earn much less than I do?', 'Should we use their take-home pay?'],
+  pContrib: ['How do you put a number on childcare?', 'What if they do a bit of everything?'],
+  pChildcare: ['Why is replacing their care often missed?', 'What if family would help for free?'],
+  pChildcareCost: ['Is this until the kids are in school?', 'What if we already pay for care?'],
+  pHome: ['Do we need to pay the home off twice?', 'What if my income covers the mortgage?'],
+  pCovHave: ['Does their work coverage count the same way?', 'What if I am not sure what they have?'],
+  pCovAmt: ['Is this enough on its own?', 'Should this match my coverage?'],
+  pCoverOpt: ['How should we split coverage between us?', 'What if we only insure me for now?'],
+  pAge: ['Why does their age change the price?', 'Does their age change how much they need?'],
+  pHealthGate: ['Does this change what they need, or only the price?', 'What if I do not know their details?']
+};
+const normQ = s => String(s).toLowerCase().replace(/[’']/g, "'").replace(/[^a-z0-9]+/g, ' ').trim();
+function alreadyAsked(text) {
+  const n = normQ(text);
+  return !n || S.qa.some(x => x.role === 'user' && normQ(x.content) === n);
+}
+function currentQuestionText() {
+  if (!S.active) return '';
+  const a = S.active.node.ask(P());
+  const x = Array.isArray(a) ? (a.filter(y => y && y.q).pop() || a[0]) : a;
+  return String(typeof x === 'string' ? x : (x.q || '')).replace(/\*\*/g, '');
+}
+function promptsForNode(id) {
+  if (QUESTION_PROMPTS[id]) return QUESTION_PROMPTS[id];
+  const mapped = id.replace(/^ph/, 'h');
+  if (QUESTION_PROMPTS[mapped]) return QUESTION_PROMPTS[mapped];
+  if (/^ph/.test(id)) return ['Why does this change their price?', 'What if I am not sure?'];
+  if (/^h[A-Z]/.test(id)) return ['Why does this change the price?', 'What if I would rather not say?'];
+  return ['Why do you ask this?'];
+}
+function topicFollowups(text) {
+  const t = String(text || '').toLowerCase();
+  if (/term|whole|policy|cash value|ladder/.test(t)) return ['Which is better for me, term or whole life?', 'Can I switch from term later?', 'Show me my policy'];
+  if (/job|work coverage|employer|laid off/.test(t)) return ['What if I change jobs?', 'What if I lose my job?', 'Should I count work coverage?'];
+  if (/partner|spouse|wife|husband/.test(t)) return ['Why does my partner need coverage too?', 'How should we split coverage between us?'];
+  if (/price|premium|class|health|nicotine/.test(t)) return ['How could I improve my price class?', 'What would this cost each month?'];
+  if (/timeline|year by year/.test(t)) return ['What does my timeline mean for my family?', 'Show me the timeline'];
+  if (/scenario|what if|sick|illness|can.?t work/.test(t)) return ['Which of these scenarios matters most for us?', 'What if I get sick and cannot work?'];
+  if (/mortgage|home|house/.test(t)) return ['What if we only pay off part of the home?', 'What if we buy a bigger home?'];
+  if (/saving|401|retire/.test(t)) return ['Should I include my retirement accounts?', 'Why keep some savings as an emergency fund?'];
+  return ['Explain my plan', 'What should I look at next?', 'Show me the timeline'];
+}
+function planSuggest() {
+  const p = P();
+  const items = ['Explain my plan'];
+  if (p.coverageSource === 'work') items.push('What if I change jobs?');
+  else if (p.income) items.push('What if I lose my job?');
+  else items.push('What if we have a big unexpected bill?');
+  if (p.policy) items.push(p.policy.type === 'whole' ? 'How is term different for my plan?' : 'Which is better for me, term or whole life?');
+  else items.push('What’s the difference between term and whole life?');
+  if (hasPartner(p) && p.partner && p.partner.depends && p.partner.depends !== 'no' && !p.partner.cover) items.push('Why does my partner need coverage too?');
+  if (hasKids(p)) items.push('What if we have another baby?');
+  items.push('Show me the timeline');
+  return items;
+}
+function fallbackSuggest() {
+  const revealed = !!stream.querySelector('.card[data-kind="reveal"]');
+  const ready = !!stream.querySelector('.card[data-kind="explore"]');
+  let items = [];
+  if (S.active) items = promptsForNode(S.active.node.id);
+  else if (ready || revealed) items = planSuggest();
+  else if (S.qa.length) {
+    const last = [...S.qa].reverse().find(x => x.role === 'user');
+    items = topicFollowups(last && last.content);
+  }
+  const seen = new Set();
+  return items.filter(Boolean).filter(t => {
+    const n = normQ(t);
+    if (!n || seen.has(n) || alreadyAsked(t)) return false;
+    seen.add(n);
+    return true;
+  }).slice(0, 3);
+}
+let suggestKey = '';
+let suggestGen = 0;
+function suggestContextKey() {
+  const last = [...S.qa].reverse().find(x => x.role === 'user');
+  const id = S.active ? S.active.node.id : '';
+  const ready = stream.querySelector('.card[data-kind="explore"]') ? '1' : '0';
+  const revealed = stream.querySelector('.card[data-kind="reveal"]') ? '1' : '0';
+  return [id, ready, revealed, S.stage, S.qa.filter(x => x.role === 'user').length, (last && last.content || '').slice(0, 140)].join('|');
+}
+function paintSuggest(items) {
+  const el = document.getElementById('suggest');
+  if (!el) return;
   el.innerHTML = '';
-  if (!S.started) return;
-  const p = P(), ready = !!stream.querySelector('.card[data-kind="explore"]');
-  const items = ready ? [
-    'What if I lose my job?',
-    p.policy ? (p.policy.type === 'whole' ? 'Switch to a 20-year term' : 'Switch to whole life') : null,
-    p.income ? `I got a raise to ${fmtK(roundTo(p.income * 1.1, 5000))}` : null,
-    'Show me the timeline'
-  ] : S.active ? ['Why do you ask this?', 'What’s term vs whole life?'] : [];
-  for (const t of items.filter(Boolean)) el.append(h('button', { class: 'chip', type: 'button', onclick: () => askQuestion(t) }, t));
+  for (const t of items) el.append(h('button', { class: 'chip', type: 'button', onclick: () => askQuestion(t) }, t));
+}
+function renderSuggest() {
+  const el = document.getElementById('suggest');
+  if (!el) return;
+  if (!S.started) { el.innerHTML = ''; suggestKey = ''; return; }
+  const key = suggestContextKey();
+  const local = fallbackSuggest();
+  if (key !== suggestKey) {
+    suggestKey = key;
+    paintSuggest(local);
+    if (S.ai.sample) void fillSuggestWithAI(key);
+  } else if (!el.children.length && local.length) paintSuggest(local);
+}
+async function fillSuggestWithAI(key) {
+  const gen = ++suggestGen;
+  const asked = S.qa.filter(x => x.role === 'user').map(x => x.content).slice(-8);
+  const last = asked[asked.length - 1] || '';
+  const q = currentQuestionText();
+  const mode = S.active
+    ? `The app is currently asking: "${q}". Write 3 short questions this person might ask ABOUT that question before answering it. They should help them understand the question, not answer it.`
+    : last
+      ? `They just said: "${last.slice(0, 240)}". Write 3 follow-up questions about that same topic, using what is true in their plan.`
+      : 'Write 3 questions that fit this specific plan right now, including a what-if that applies to their household.';
+  const prompt = `You write tappable questions for LincolnLens, a life insurance planning app. ${mode}
+Reply with ONLY JSON: {"suggestions":["...","...","..."]}
+Rules:
+- Each item is a question or request the person would send, 4 to 16 words.
+- Make them specific to the moment above. Do not reuse the same generic questions for every step.
+- Do not repeat anything they already asked.
+- Do not invent dollar amounts.
+
+ALREADY ASKED
+${asked.length ? asked.map(x => '- ' + x).join('\n') : '- none'}
+
+WHERE THEY ARE
+${q ? 'Open question: ' + q : 'No question is open.'}
+${planFactsText()}`;
+  try {
+    const out = await S.ai.sample.json(prompt, { modelTier: 'quick', cache: false });
+    if (gen !== suggestGen || key !== suggestKey) return;
+    const raw = Array.isArray(out && out.suggestions) ? out.suggestions : [];
+    const seen = new Set();
+    const items = [];
+    for (const s of raw) {
+      const t = String(s || '').replace(/\s+/g, ' ').trim();
+      const n = normQ(t);
+      if (!t || t.length > 96 || t.split(/\s+/).length < 3 || seen.has(n) || alreadyAsked(t)) continue;
+      if (/\$\s?\d/.test(t)) continue;
+      seen.add(n);
+      items.push(t);
+      if (items.length === 3) break;
+    }
+    if (items.length >= 2) {
+      paintSuggest(items);
+      logAI({ task: 'Suggested questions', via: 'claude', detail: items.join(' · ') });
+    }
+  } catch (e) {
+    if (gen === suggestGen) logAI({ task: 'Suggested questions', via: 'local', detail: `${aiName()} couldn’t suggest questions (${e && e.code || 'error'}), so questions matched to this step were used.` });
+  }
 }
 
 function localAnswer(q) {
   const p = P(), c = compute(p), C = S.coverage || c.tiers.balanced, t = q.toLowerCase();
   const R = C ? tradeoffs(p, C) : null;
+  if (/how much coverage should i pick|difference between these three/.test(t)) return c.tiers.balanced ? `Most families start with the balanced amount, ${fmtK(c.tiers.balanced)}, which covers everything you listed. ${fmtK(c.tiers.essential)} covers the essentials, and ${fmtK(c.tiers.more)} adds extra cushion.` : 'What you already have covers what you described, so you may not need more coverage right now.';
+  if (/what does my timeline mean/.test(t) && C) return `${reactionText(p, C).replace(/\*\*/g, '')} Drag through the years to see what the money does at each stage.`;
+  if (/right policy for me/.test(t) && p.policy && S.coverage) return `You’re planning around ${policyName(p.policy).toLowerCase()} for ${fmtK(S.coverage)}. ${R ? R.verdict : ''}`.trim();
+  if (/improve my price class/.test(t)) { const rc = riskClass(p.health); return !rc.known ? 'Share a few health details and I can estimate your class and what would improve it.' : rc.improve.length ? rc.improve.join(' ') : `You’re already in a strong class, ${rc.cls.name}. Keeping your current habits is the best way to hold it.`; }
+  if (/options might fit me|look at first/.test(t)) return wealthProfile(p).tier ? 'With what you’ve shared, permanent options such as guaranteed universal life, survivorship coverage, or long-term care benefits are the ones to ask a licensed professional about.' : 'The next useful step is the part of the plan that still moves your number: years of income, the mortgage, or savings you could use.';
+  if (/split coverage between us/.test(t) && hasPartner(p)) { const pc = compute(partnerProfile(p)); return `Each of you needs your own amount: about ${fmtK(c.tiers.balanced)} on your side and ${fmtK(pc.tiers.balanced)} on your partner’s, because each of you provides something the household would need to replace.`; }
+  if (/scenarios? matters most/.test(t)) return 'Compare the sudden changes in your plan. The one that leaves the biggest gap is the one to plan for first. Job loss matters most when coverage is tied to work.';
   if (/ad&d|ad and d|accident/.test(t)) return 'AD&D, accidental death and dismemberment, only pays if the cause is an accident. That’s why it isn’t counted as life insurance in your plan, even when it’s listed next to it on a benefits page.';
   if (/work|employer|job|group/.test(t)) return p.coverage && p.coverageSource === 'work' ? `Your ${fmtK(p.coverage)} through work counts today, but it usually ends if you leave the job, retire or are laid off. You can turn it off in your plan to see the number without it.` : 'Coverage through work usually ends when the job does, so it’s worth knowing how much depends on it. If you have some, add it in your plan and you can switch it on or off.';
   if (/ladder/.test(t)) return R && R.tp.ladder ? `A ladder splits coverage into policies that end at different times: here, ${fmtK(R.tp.ladder.long.amount)} for ${R.tp.ladder.long.years} years plus ${fmtK(R.tp.ladder.short.amount)} for ${R.tp.ladder.short.years} years. Your coverage steps down as your needs shrink, which usually costs less than one big policy.` : 'A ladder splits coverage into a few term policies that end at different times, so coverage steps down as your needs shrink. It usually costs less than one large policy.';
@@ -708,9 +1112,10 @@ async function askQuestion(q) {
     const body = wrap.querySelector('.body'); body.innerHTML = '';
     renderParts(body, [CRISIS_REPLY]); S.log.push({ t: 'll', parts: [CRISIS_REPLY] }); S.qa.push({ role: 'assistant', content: CRISIS_REPLY });
     logAI({ task: 'Responded with support resources', via: 'local', detail: 'A message suggested distress, so LincolnLens gave a fixed, caring reply instead of a model answer.' });
-    scheduleSave(); scrollDown(true); return;
+    scheduleSave(); scrollDown(true); renderSuggest(); return;
   }
-  if (S.pending && S.pending.onText && S.pending.onText(q)) { wrap.remove(); return; }
+  if (S.pending && S.pending.onText && S.pending.onText(q)) { wrap.remove(); renderSuggest(); return; }
+  if (/\b(explain|walk me through|summari[sz]e|break down)\b[^.?]*\b(my|the)\s+(plan|number|coverage|target)\b/i.test(q)) { wrap.remove(); return explainPlan(true); }
   const currentQ = S.active ? (() => { const a = S.active.node.ask(P()); const x = Array.isArray(a) ? (a.filter(y => y && y.q).pop() || a[0]) : a; return String(typeof x === 'string' ? x : (x.q || '')).replace(/\*\*/g, ''); })() : '';
   let reply = null, action = null, via = 'local';
   // a clear command is handled instantly, even with a model connected
@@ -756,7 +1161,7 @@ async function askQuestion(q) {
   const parts = [reply ? { html } : null, res && res.note ? { note: res.note } : null, note ? { note } : null];
   renderParts(body, parts);
   if (res && res.undo) {
-    const undo = h('button', { class: 'linkish small-link', type: 'button', onclick: () => { res.undo(); refresh(); undo.textContent = 'Undone'; undo.disabled = true; } }, 'Undo');
+    const undo = h('button', { class: 'linkish small-link', type: 'button', onclick: () => { res.undo(); refresh(); syncAfterChange(); undo.textContent = 'Undone'; undo.disabled = true; } }, 'Undo');
     body.append(undo);
   }
   S.log.push({ t: 'll', parts: logParts(parts) });
@@ -768,9 +1173,14 @@ async function askQuestion(q) {
   // a typed answer to the waiting question moves the conversation on
   if (answerNode && S.active && S.active.node === answerNode) { S.active.choose(answerVal); return; }
   if (S.active && res && res.answered && S.active.node.known && S.active.node.known(P())) { S.active.skip(); return; }
+  if (res && (res.answered || res.undo)) {
+    if (S.active) { syncAfterChange(); if (!S.active) return; }
+    else { setTimeout(syncAfterChange, 400); }
+  }
   if (S.active && S.active.node.id === 'policyType' && res && action && action.type === 'policy') { S.active.skip(); return; }
   if (S.active && S.active.wEl && S.active.wEl.isConnected) { await wait(250); stream.append(S.active.qEl, S.active.wEl); if (!(res && res.after)) scrollDown(true); }
   else if (S.pending && S.pending.el && S.pending.el.isConnected) { await wait(250); stream.append(S.pending.el); scrollDown(true); }
+  renderSuggest();
 }
 
 /* ======================================================================
@@ -853,4 +1263,4 @@ function openDrawer() { drawerOpen = true; $('#drawerWrap').classList.add('open'
 function closeDrawer() { drawerOpen = false; $('#drawerWrap').classList.remove('open'); $('#drawerWrap').setAttribute('aria-hidden', 'true'); $('#openWork').focus(); }
 
 
-export { CRISIS, CRISIS_REPLY, GENERIC, INTAKE_PROMPT, LOCAL_LLM, PHOTO_PROMPT, QA_RULES, SHOW_CARDS, SHOW_NAMES, STOP, SYN, UPDATES, WHY, WORDNUM, aiName, applyAction, applyIntake, askQuestion, assumeText, blobToDataURL, closeDrawer, connectLocal, contextForAI, drawSampleDoc, drawerOpen, initAI, intakeChips, localAnswer, localChat, localChoose, localIntent, localParse, localSample, logAI, looksLikeQuestion, nodeOptions, openDrawer, optionsForPrompt, parseJSONLoose, parseMoney, photoButton, photoFlow, pickImage, pulse, readIntake, renderDrawer, renderSuggest, sanitizeIntake, showCard, startFromText, toMessages, toks, typedMoney, validateAnswer };
+export { CRISIS, CRISIS_REPLY, FIELD_NODES, GENERIC, INTAKE_PROMPT, LOCAL_LLM, PHOTO_PROMPT, QA_RULES, SHOW_CARDS, SHOW_NAMES, STOP, SYN, UPDATES, WHY, WORDNUM, addAskAbout, aiName, applyAction, applyIntake, askQuestion, assumeText, blobToDataURL, buildInsights, clearFact, closeDrawer, connectLocal, contextForAI, drawSampleDoc, drawerOpen, explainPlan, initAI, intakeChips, localAnswer, localChat, localChoose, localIntent, localParse, localSample, logAI, looksLikeQuestion, markAnswersChanged, nodeOptions, openDrawer, optionsForPrompt, parseJSONLoose, parseMoney, photoButton, photoFlow, pickImage, profileFacts, pulse, readIntake, refreshBackends, renderDrawer, renderInsights, renderSuggest, sanitizeIntake, showCard, startFromText, toMessages, toks, typedMoney, unmark, validateAnswer, writeBrief };
