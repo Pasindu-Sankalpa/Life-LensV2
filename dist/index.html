@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LincolnLens: your life insurance, explained</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+  <script type="module" crossorigin src="/assets/index-BVci-DFj.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-D1EW8Pje.css">
+</head>
+<body class="on-landing pre">
+<section class="landing" id="landing" aria-label="Welcome to LincolnLens">
+  <div class="landing-inner">
+    <div class="l-brand">
+      <div class="name">LincolnLens</div>
+      <div class="tag">Your life insurance, explained</div>
+    </div>
+    <div class="l-hero">
+      <h1>Know what <em>your family</em> would need.</h1>
+      <p class="lede">Answer a few simple questions. See the financial gaps life insurance could help cover.</p>
+      <div class="l-actions">
+        <button class="l-cta" id="buildPlan" type="button">Build my plan</button>
+        <button class="linkish" id="continuePlan" type="button" hidden>Continue your last plan</button>
+      </div>
+      <p class="l-fine">No insurance knowledge needed · No sensitive financial accounts · Every number explained</p>
+    </div>
+    <div class="l-cards">
+      <div class="l-card">
+        <h3><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span>No Sign-Up</h3>
+        <p>No account needed. Save or take your plan with you later.</p>
+      </div>
+      <div class="l-card alt">
+        <h3><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 5 6v6c0 4.2 3 7.6 7 9 4-1.4 7-4.8 7-9V6z"/></svg></span>Stay Private</h3>
+        <p>No Social Security number, bank details, or medical information needed.</p>
+      </div>
+      <div class="l-card">
+        <h3><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 6h10M10 12h10M10 18h10M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg></span>Clear Numbers</h3>
+        <p>See what you told us, what we assumed, and how the estimate was worked out.</p>
+      </div>
+      <div class="l-card alt">
+        <h3><span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5.5C5.5 4.5 8.5 4.5 12 6.5v13c-3.5-2-6.5-2-9-1z"/><path d="M21 5.5c-2.5-1-5.5-1-9 1v13c3.5-2 6.5-2 9-1z"/></svg></span>Trusted Sources</h3>
+        <p>Insurance explanations link to public, reputable pages.</p>
+      </div>
+    </div>
+  </div>
+</section>
+<div class="app">
+  <header class="top">
+    <button class="ghost nav-toggle" id="navToggle" type="button" aria-label="Your plans" aria-expanded="false" aria-controls="sideNav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+    <button class="brand" id="brandHome" type="button" aria-label="LincolnLens home">LincolnLens</button>
+    <ol class="stages" id="stages" aria-label="Your progress"></ol>
+    <div class="top-actions">
+      <button class="ghost" id="openWork" type="button">Behind the numbers</button>
+      <button class="ghost hide-sm" id="newPlanTop" type="button">New plan</button>
+    </div>
+  </header>
+  <div class="main">
+    <nav class="side-nav" id="sideNav" aria-label="Your plans">
+      <button class="btn new-plan" id="newPlan" type="button">New plan</button>
+      <h2 class="side-h">Your plans</h2>
+      <ul class="plan-list" id="planList"></ul>
+      <p class="side-note">Saved only in this browser. Health answers are never saved.</p>
+    </nav>
+    <section class="convo" id="convo" aria-label="Conversation">
+      <div class="stream" id="stream" aria-live="polite"></div>
+      <div class="composer">
+        <div class="suggest" id="suggest" aria-label="Suggestions"></div>
+        <form id="askForm" autocomplete="off">
+          <label class="sr" for="ask">Ask LincolnLens a question</label>
+          <input id="ask" placeholder="Ask anything, or tell me what changed" maxlength="400">
+          <button class="btn small" type="submit">Ask</button>
+        </form>
+        <div class="hint">I can answer questions, update your plan or run a what-if. Educational estimate, not advice.</div>
+      </div>
+    </section>
+    <aside class="panel" id="panel" aria-label="Your plan so far">
+      <button class="sheet-bar" id="sheetBar" type="button" aria-expanded="false"><span class="grab"></span><span>Your plan so far</span><b id="sheetNum">—</b></button>
+      <div class="plan" id="plan"></div>
+    </aside>
+  </div>
+</div>
+<div class="nav-scrim" id="navScrim" hidden></div>
+<div class="drawer-wrap" id="drawerWrap" aria-hidden="true">
+  <div class="scrim" data-close></div>
+  <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
+    <button class="ghost close" data-close type="button">Close</button>
+    <h2 id="drawerTitle">Behind the numbers</h2>
+    <p>Every figure comes from a fixed calculation you can inspect here. The AI reads what you type and explains things in plain words. It never calculates, and every dollar figure it writes is checked against the plan before you see it.</p>
+    <div id="drawerBody"></div>
+  </div>
+</div>
+<canvas id="docCanvas" width="900" height="1160" hidden></canvas>
+</body>
+</html>
