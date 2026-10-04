@@ -12,7 +12,9 @@ This repository is named **Life-LensV2**; the current interface uses **LincolnLe
 
 ## Walkthrough
 
-[![Watch the LincolnLens walkthrough on YouTube](images/walkthough.PNG)](https://youtu.be/X3ahr12aM20)
+<a href="https://youtu.be/X3ahr12aM20" target="_blank" rel="noopener noreferrer">
+  <img src="images/walkthough.PNG" alt="Watch the LincolnLens walkthrough on YouTube">
+</a>
 
 *Click the thumbnail to watch the walkthrough on YouTube.*
 
